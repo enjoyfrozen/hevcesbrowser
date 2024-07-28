@@ -3,7 +3,7 @@
 
 #include <QMainWindow>
 #include <QMimeData>
-
+#include <QProgressBar>
 
 class MainWindow: public QMainWindow
 {
@@ -31,6 +31,7 @@ private:
     QWidget      *m_pwarnViewer;
     QWidget      *m_pinfoViewer;
     QWidget      *m_phdrInfoViewer;
+    QProgressBar *m_pprogressBar = nullptr;
 };
 
 

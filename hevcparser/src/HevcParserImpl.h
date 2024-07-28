@@ -28,10 +28,12 @@ namespace HEVC
       void processPPS(std::shared_ptr<PPS> ppps, BitstreamReader &bs, const Parser::Info &info);
       void processSlice(std::shared_ptr<Slice> pslice, BitstreamReader &bs, const Parser::Info &info);
       void processAUD(std::shared_ptr<AUD> paud, BitstreamReader &bs, const Parser::Info &info);
+
+
       void processSEI(std::shared_ptr<SEI> psei, BitstreamReader &bs, const Parser::Info &info);
       void processSliceHeader(std::shared_ptr<Slice> pslice, BitstreamReader &bs, const Parser::Info &info);
       void processSliceData(std::shared_ptr<Slice> pslice, BitstreamReader &bs, const Parser::Info &info);
-      ProfileTierLevel processProfileTierLevel(std::size_t max_sub_layers_minus1, BitstreamReader &bs, const Parser::Info &info);
+      ProfileTierLevel processProfileTierLevel(uint8_t profilePresentFlag, std::size_t max_sub_layers_minus1, BitstreamReader &bs, const Parser::Info &info);
       HrdParameters processHrdParameters(uint8_t commonInfPresentFlag, std::size_t maxNumSubLayersMinus1, BitstreamReader &bs);
       SubLayerHrdParameters processSubLayerHrdParameters(uint8_t sub_pic_hrd_params_present_flag, std::size_t CpbCnt, BitstreamReader &bs);
       ShortTermRefPicSet processShortTermRefPicSet(std::size_t stRpsIdx, size_t num_short_term_ref_pic_sets, const std::vector<ShortTermRefPicSet> &refPicSets, std::shared_ptr<SPS> psps, BitstreamReader &bs, const Parser::Info &info);
@@ -39,6 +41,98 @@ namespace HEVC
       ScalingListData processScalingListData(BitstreamReader &bs);
       RefPicListModification processRefPicListModification(BitstreamReader &bs, std::shared_ptr<Slice> pslice);
       PredWeightTable processPredWeightTable(BitstreamReader &bs, std::shared_ptr<Slice> pslice);
+      VpsVui processVpsVui(std::shared_ptr<VPS> pvps, BitstreamReader& bs);
+      VpsVuiBspHrdParams processVpsVuiBspHrdParams(std::shared_ptr<VPS> pvps, BitstreamReader& bs);
+
+      //zorro add
+      int NumOutputLayerSets = 0;
+      std::vector<uint8_t> NumLayersInIdList;
+      //(F-10£©
+      std::vector<uint32_t> MaxSubLayersInLayerSetMinus1;
+      void updateMaxSubLayersInLayerSetMinus1(std::shared_ptr<VPS> pvps);
+      
+      //(F-3)
+      int NumViews = 0;
+      std::vector < std::vector<uint8_t>> ScalabilityId;
+      std::vector<uint32_t>  DepthLayerFlag, ViewOrderIdx, DependencyId, AuxId;
+      std::vector<uint8_t> LayerIdxInVps;
+      void processNumViews(std::shared_ptr<VPS> pvps);
+
+      //(F-4)
+      std::vector < std::vector<uint8_t>> DependencyFlag;
+      void updateDependencyFlag(std::shared_ptr<VPS> pvps);
+
+      //(F-5)
+      std::vector < std::vector<uint8_t>> IdDirectRefLayer, IdRefLayer, IdPredictedLayer;
+      std::vector<uint8_t> NumDirectRefLayers, NumRefLayers, NumPredictedLayers;
+      void updateF5(std::shared_ptr<VPS> pvps);
+
+      //(F-6) 
+      int NumIndependentLayers = 0;
+      std::vector<std::vector<uint8_t>> TreePartitionLayerIdList;
+      std::vector<uint8_t> NumLayersInTreePartition;
+      void updateNumIndependentLayers(std::shared_ptr<VPS> pvps);
+
+
+      //(7-3)
+      int MaxLayersMinus1 = 0;
+      int NumScalabilityTypes = 0;
+      void updateMaxLayersMinus1(std::shared_ptr<VPS> pvps);
+
+      //(F-7)
+      int NumLayerSets = 0;
+      void updateNumLayerSets(std::shared_ptr<VPS> pvps);
+
+       //(F-8)
+      int FirstAddLayerSetIdx = 0;
+      int LastAddLayerSetIdx = 0;
+      void updateF8(std::shared_ptr<VPS> pvps);
+
+      //(F-9) update LayerSetLayerIdList, and NumLayersInIdList
+      std::vector<std::vector<uint16_t>> LayerSetLayerIdList;
+
+      std::vector<std::vector<uint16_t>> OutputLayerFlag;
+      void updateNumLayersInIdList(int i, std::shared_ptr<VPS> pvps);
+
+      // The nuh_layer_id value of the NAL unit containing the PPS that is activated for a layer layerA with nuh_layer_id equal to nuhLayerIdA shall be equal to 0, or nuhLayerIdA, or the nuh_layer_id of a direct or indirect reference layer of layerA.
+      int vps_nuhLayerIdA = 0; //zorro: default 0
+      int sps_nuhLayerIdA = 0; //zorro: default 0
+      int pps_nuhLayerIdA = 0; //zorro: default 0
+      void updateOutputLayerFlag(std::shared_ptr<VPS> pvps);
+
+      //(F-11)
+      std::vector<uint8_t> OlsIdxToLsIdx;
+      void ProcessOlsIdxToLsIdx(int maxIdx, std::shared_ptr<VPS> pvps);
+      
+      //(F-12)
+      int defaultOutputLayerIdc = 0;
+      std::vector<uint8_t> NumOutputLayersInOutputLayerSet, OlsHighestOutputLayerId;
+      void ProcessNumOutputLayersInOutputLayerSet(std::shared_ptr<VPS> pvps);
+      
+      //(F-13)
+      std::vector<std::vector<uint8_t>> NecessaryLayerFlag;
+      std::vector<uint8_t> NumNecessaryLayers;
+      void ProcessF13();
+
+      DpbSize processDpbSize(std::shared_ptr<VPS> pvps, BitstreamReader& bs);
+      RepFormat processRepFormat(BitstreamReader& bs);
+
+      VideoSignalInfo processVideoSignalInfo(BitstreamReader& bs);
+
+      void ProcessVpsExtension(std::shared_ptr<VPS> pvps, BitstreamReader& bs);
+
+      //add for sps
+      SpsRangeExtension processSpsRangeExtension(BitstreamReader& bs);
+      Sps3dExtension processSps3dExtension(BitstreamReader& bs);
+      //add end
+
+      //add for pps
+      PpsRangeExtension processPpsRangeExtension(std::shared_ptr<PPS> ppps, BitstreamReader &bs);
+      PpsMultilayerExtension processPpsMultilayerExtension(std::shared_ptr<PPS> ppps, BitstreamReader& bs);
+      Pps3dExtension processPps3dExtension(std::shared_ptr<PPS> ppps, BitstreamReader& bs);
+      DeltaDlt processDeltaDlt(int pps_bit_depth_for_depth_layers_minus8, BitstreamReader& bs);
+      ColourMappingTable processColourMappingTable(BitstreamReader& bs);
+      //add end
 
       void processDecodedPictureHash(std::shared_ptr<DecodedPictureHash> pdecPicHash, BitstreamReader &bs);
       void processUserDataUnregistered(std::shared_ptr<UserDataUnregistered> pSeiPayload, BitstreamReader &bs, std::size_t payloadSize);

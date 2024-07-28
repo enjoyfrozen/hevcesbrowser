@@ -123,9 +123,12 @@ void SyntaxViewer::createVPS(std::shared_ptr<HEVC::VPS> pVPS)
 
   for(std::size_t i = (pVPS -> vps_sub_layer_ordering_info_present_flag ? 0 : pVPS -> vps_max_sub_layers_minus1); i <= pVPS -> vps_max_sub_layers_minus1; i++)
   {
-    ploop -> addChild(new QTreeWidgetItem(QStringList("vps_max_dec_pic_buffering_minus1[" + QString::number(i) + "] = " + QString::number(pVPS -> vps_max_dec_pic_buffering_minus1[i]))));
-    ploop -> addChild(new QTreeWidgetItem(QStringList("vps_max_num_reorder_pics[" + QString::number(i) + "] = " + QString::number(pVPS -> vps_max_num_reorder_pics[i]))));
-    ploop -> addChild(new QTreeWidgetItem(QStringList("vps_max_latency_increase_plus1[" + QString::number(i) + "] = " + QString::number(pVPS -> vps_max_latency_increase_plus1[i]))));
+      QStringList sl1 = QStringList("vps_max_dec_pic_buffering_minus1[" + QString::number(i) + "] = " + QString::number(pVPS->vps_max_dec_pic_buffering_minus1[i]));
+    ploop -> addChild(new QTreeWidgetItem(sl1));
+      QStringList sl2 = QStringList("vps_max_num_reorder_pics[" + QString::number(i) + "] = " + QString::number(pVPS->vps_max_num_reorder_pics[i]));
+    ploop -> addChild(new QTreeWidgetItem(sl2));
+      QStringList sl3 = QStringList("vps_max_latency_increase_plus1[" + QString::number(i) + "] = " + QString::number(pVPS->vps_max_latency_increase_plus1[i]));
+    ploop -> addChild(new QTreeWidgetItem(sl3));
   }
 
   pvpsItem -> addChild(new QTreeWidgetItem(QStringList("vps_max_layer_id = " + QString::number(pVPS -> vps_max_layer_id))));
@@ -154,7 +157,13 @@ void SyntaxViewer::createVPS(std::shared_ptr<HEVC::VPS> pVPS)
           if((j + 1) % 8)
             str += "\n";
         }
-        str += QString::number(pVPS -> layer_id_included_flag[i][pVPS -> vps_max_layer_id - 1]) + " } ";
+        if (pVPS->layer_id_included_flag.size() < (i + 1)) {
+            qWarning() << __FUNCTION__ << "i"<<i<<"pVPS->layer_id_included_flag.size"<< pVPS->layer_id_included_flag.size();
+            str += "bad layer_id_included_flag";
+        }
+        else {
+            str += QString::number(pVPS->layer_id_included_flag[i][pVPS->vps_max_layer_id - 1]) + " } ";
+        }
       }
       ploop -> addChild(new QTreeWidgetItem(QStringList(str)));
     }

@@ -9,7 +9,7 @@ class BitstreamReader
 public:
   BitstreamReader(const uint8_t *ptr, std::size_t size);
   bool getBit();
-  uint32_t getBits(std::size_t num);
+  uint64_t getBits(std::size_t num);
   void skipBits(std::size_t num);
   uint32_t showBits(std::size_t num);
   uint32_t getGolombU();
@@ -17,6 +17,9 @@ public:
 
   std::size_t available();
   std::size_t availableInNalU();
+
+  bool byteAligned();
+  void skipBitsForByteAlign();
 
 private:
   const uint8_t              *m_ptr;

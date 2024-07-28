@@ -1,4 +1,4 @@
-#include "HevcParserImpl.h"
+﻿#include "HevcParserImpl.h"
 #include "HevcUtils.h"
 
 #include <iostream>
@@ -6,6 +6,7 @@
 #include <string>
 
 #include <sstream>
+#include <cmath>
 
 #include <assert.h>
 
@@ -14,6 +15,8 @@ using namespace HEVC;
 #define SLICE_B 0
 #define SLICE_P 1
 #define SLICE_I 2
+
+//C++细节：uint8_t不能用std::cout打印, =》static_cast<int>
 
 void HevcParserImpl::addConsumer(Consumer *pconsumer)
 {
@@ -109,6 +112,7 @@ void HevcParserImpl::processNALUnit(const uint8_t *pdata, std::size_t size, cons
     case NAL_VPS:
     {
       std::shared_ptr<VPS> pvps(new VPS);
+      pvps->toDefault();
       processVPS(pvps, bs, info);
       pnalU = pvps;
       m_vpsMap[pvps -> vps_video_parameter_set_id] = pvps;
@@ -118,6 +122,7 @@ void HevcParserImpl::processNALUnit(const uint8_t *pdata, std::size_t size, cons
     case NAL_SPS:
     {
       std::shared_ptr<SPS> psps(new SPS);
+      psps->toDefault();
       processSPS(psps, bs, info);
       pnalU = psps;
       m_spsMap[psps -> sps_seq_parameter_set_id] = psps;
@@ -128,6 +133,8 @@ void HevcParserImpl::processNALUnit(const uint8_t *pdata, std::size_t size, cons
     {
 
       std::shared_ptr<PPS> ppps(new PPS);
+      ppps->toDefault();
+
       processPPS(ppps, bs, info);
       pnalU = ppps;
       m_ppsMap[ppps -> pps_pic_parameter_set_id] = ppps;
@@ -501,13 +508,20 @@ void HevcParserImpl::processSliceData(std::shared_ptr<Slice> pslice, BitstreamRe
 void HevcParserImpl::processVPS(std::shared_ptr<VPS> pvps, BitstreamReader &bs, const Parser::Info &info)
 {
   pvps -> vps_video_parameter_set_id = bs.getBits(4);
+#ifdef ORIG_CODE
   bs.getBits(2);
+#else
+  pvps->vps_base_layer_internal_flag = bs.getBit();
+  pvps->vps_base_layer_available_flag = bs.getBit();
+#endif
   pvps -> vps_max_layers_minus1 = bs.getBits(6);
+  updateMaxLayersMinus1(pvps);
+
   pvps -> vps_max_sub_layers_minus1 = bs.getBits(3);
   pvps -> vps_temporal_id_nesting_flag = bs.getBits(1);
-  bs.getBits(16);
+  bs.getBits(16); //reserved 16 bits 0xffff
 
-  pvps -> profile_tier_level = processProfileTierLevel(pvps -> vps_max_sub_layers_minus1, bs, info);
+  pvps -> profile_tier_level = processProfileTierLevel(1, pvps -> vps_max_sub_layers_minus1, bs, info);
 
   pvps -> vps_sub_layer_ordering_info_present_flag = bs.getBits(1);
 
@@ -527,7 +541,7 @@ void HevcParserImpl::processVPS(std::shared_ptr<VPS> pvps, BitstreamReader &bs, 
   pvps -> vps_num_layer_sets_minus1 = bs.getGolombU();
 
   pvps -> layer_id_included_flag.resize(pvps -> vps_num_layer_sets_minus1+1);
-
+  pvps->layer_id_included_flag[0].resize(pvps->vps_max_layer_id + 1);
   for(std::size_t i=1; i<=pvps -> vps_num_layer_sets_minus1; i++)
   {
     pvps -> layer_id_included_flag[i].resize(pvps -> vps_max_layer_id+1);
@@ -568,15 +582,745 @@ void HevcParserImpl::processVPS(std::shared_ptr<VPS> pvps, BitstreamReader &bs, 
   }
 
   pvps -> vps_extension_flag = bs.getBits(1);
+
+  std::cout << __FUNCTION__<<"pvps->vps_extension_flag" << static_cast<int>(pvps->vps_extension_flag) << std::endl;
+  if (pvps->vps_extension_flag) {
+      ProcessVpsExtension(pvps, bs);
+  }
+  
 }
 
+//(F-3) called, addition LayerIdxInVps
+void HevcParserImpl::processNumViews(std::shared_ptr<VPS> pvps)
+{
+    NumViews = 1;
+    ScalabilityId.resize(MaxLayersMinus1 +1);
+    DepthLayerFlag.resize(MaxLayersMinus1 + 1);
+    ViewOrderIdx.resize(MaxLayersMinus1 + 1);
+    DependencyId.resize(MaxLayersMinus1 + 1);
+    AuxId.resize(MaxLayersMinus1 + 1);
+    LayerIdxInVps.resize(MaxLayersMinus1 + 1);
+    for (int i = 0; i <= MaxLayersMinus1; i++) {
+        int lId = pvps->vps_extension.layer_id_in_nuh[i];
+        //For i from 0 to MaxLayersMinus1, inclusive, the variable LayerIdxInVps[ layer_id_in_nuh[ i ] ] is set equal to i.
+        LayerIdxInVps[lId] = i;
+        ScalabilityId[i].resize(16);
+        for (int smIdx = 0, j = 0; smIdx < 16; smIdx++) { 
+            if (pvps->vps_extension.scalability_mask_flag[smIdx])
+                ScalabilityId[i][smIdx] = pvps->vps_extension.dimension_id[i][j++];
+            else
+                ScalabilityId[i][smIdx] = 0;
+        } 
+        DepthLayerFlag[lId] = ScalabilityId[i][0];
+        ViewOrderIdx[lId] = ScalabilityId[i][1];
+        DependencyId[lId] = ScalabilityId[i][2];
+        AuxId[lId] = ScalabilityId[i][3];
+        if (i > 0) {
+            int newViewFlag = 1;
+            for (int j = 0; j < i; j++)
+                if (ViewOrderIdx[lId] == ViewOrderIdx[pvps->vps_extension.layer_id_in_nuh[j]])
+                    newViewFlag = 0;
+            NumViews += newViewFlag;
+        }
+    }
+}
+
+//(F-11) called
+void HevcParserImpl::ProcessOlsIdxToLsIdx(int maxIdx, std::shared_ptr<VPS> pvps)
+{
+    OlsIdxToLsIdx.resize(NumOutputLayerSets);
+    for (int i = 0; i < NumOutputLayerSets && i<= maxIdx; i++) {
+        OlsIdxToLsIdx[i] = (i < NumLayerSets) ? i : (pvps->vps_extension.layer_set_idx_for_ols_minus1[i] + 1);
+    }
+}
+
+//(F-12) 
+void HevcParserImpl::ProcessNumOutputLayersInOutputLayerSet(std::shared_ptr<VPS> pvps)
+{
+    int i, j;
+    int start = (defaultOutputLayerIdc == 2) ? 0 : (pvps->vps_num_layer_sets_minus1 + 1);
+    NumOutputLayersInOutputLayerSet.resize(NumOutputLayerSets);
+    OlsHighestOutputLayerId.resize(NumOutputLayerSets);
+    for (i = start;i < NumOutputLayerSets;i++) {
+        NumOutputLayersInOutputLayerSet[i] = 0;
+        for (j = 0; j < NumLayersInIdList[OlsIdxToLsIdx[i]]; j++) {
+            NumOutputLayersInOutputLayerSet[i] += OutputLayerFlag[i][j];
+            if (OutputLayerFlag[i][j])
+                OlsHighestOutputLayerId[i] = LayerSetLayerIdList[OlsIdxToLsIdx[i]][j];
+        }
+    }
+}
+
+// (F-13)
+void HevcParserImpl::ProcessF13()
+{
+    int olsIdx, lsIdx, lsLayerIdx, currLayerId, rLsLayerIdx, refLayerId;
+    NecessaryLayerFlag.resize(NumOutputLayerSets);
+    NumNecessaryLayers.resize(NumOutputLayerSets);
+    for (olsIdx = 0; olsIdx < NumOutputLayerSets; olsIdx++) {
+        lsIdx = OlsIdxToLsIdx[olsIdx];
+
+        NecessaryLayerFlag[olsIdx].resize(NumLayersInIdList[lsIdx]);
+        for (lsLayerIdx = 0; lsLayerIdx < NumLayersInIdList[lsIdx]; lsLayerIdx++)
+            NecessaryLayerFlag[olsIdx][lsLayerIdx] = 0;
+        for (lsLayerIdx = 0; lsLayerIdx < NumLayersInIdList[lsIdx]; lsLayerIdx++) {
+            if (OutputLayerFlag[olsIdx][lsLayerIdx]) {
+                NecessaryLayerFlag[olsIdx][lsLayerIdx] = 1;
+                currLayerId = LayerSetLayerIdList[lsIdx][lsLayerIdx];
+                for (rLsLayerIdx = 0; rLsLayerIdx < lsLayerIdx; rLsLayerIdx++) {
+                    refLayerId = LayerSetLayerIdList[lsIdx][rLsLayerIdx];
+                    if (DependencyFlag[LayerIdxInVps[currLayerId]][LayerIdxInVps[refLayerId]])
+                        NecessaryLayerFlag[olsIdx][rLsLayerIdx] = 1;
+                }
+            }
+        }
+        NumNecessaryLayers[olsIdx] = 0;
+        for (lsLayerIdx = 0; lsLayerIdx < NumLayersInIdList[lsIdx]; lsLayerIdx++)
+            NumNecessaryLayers[olsIdx] += NecessaryLayerFlag[olsIdx][lsLayerIdx];
+    }
+}
+
+void HevcParserImpl::ProcessVpsExtension(std::shared_ptr<VPS> pvps, BitstreamReader& bs)
+{
+    int i, j;
+    VpsExtension& ve = pvps->vps_extension;
+    ve.toDefault();
+
+    if (pvps->vps_max_layers_minus1 > 0 && pvps->vps_base_layer_internal_flag) {
+        //profile_tier_level( 0, vps_max_sub_layers_minus1 )
+        //zorro ????
+        Parser::Info info;
+        processProfileTierLevel(0, pvps->vps_max_sub_layers_minus1, bs, info);
+    }
+    ve.splitting_flag = bs.getBit();
+    ve.scalability_mask_flag.resize(16);
+    NumScalabilityTypes = 0;
+    for (i = 0, NumScalabilityTypes = 0; i < 16; i++) {
+        ve.scalability_mask_flag[i] = bs.getBit();
+        NumScalabilityTypes += ve.scalability_mask_flag[i];
+    }
+
+    ve.dimension_id_len_minus1.resize(NumScalabilityTypes - ve.splitting_flag);
+    for (j = 0; j < (NumScalabilityTypes - ve.splitting_flag); j++)
+        ve.dimension_id_len_minus1[j] = bs.getBits(3);
+
+    ve.vps_nuh_layer_id_present_flag = bs.getBit();
+    ve.layer_id_in_nuh.resize(MaxLayersMinus1 + 1);
+    ve.dimension_id.resize(MaxLayersMinus1 + 1);
+    ve.dimension_id[0].resize(NumScalabilityTypes);
+    for (i = 1; i <= MaxLayersMinus1; i++) {
+        ve.dimension_id[i].resize(NumScalabilityTypes);
+        if (ve.vps_nuh_layer_id_present_flag) {
+            ve.layer_id_in_nuh[i] = bs.getBits(6);
+            if (!ve.splitting_flag)
+                for (j = 0; j < NumScalabilityTypes; j++)
+                    ve.dimension_id[i][j] = bs.getBits(ve.dimension_id_len_minus1[j]);//u(v)?
+        }
+    }
+
+    processNumViews(pvps);
+
+    ve.view_id_len = bs.getBits(4);
+    if (ve.view_id_len > 0) {
+        ve.view_id_val.resize(NumViews);
+        for (i = 0; i < NumViews; i++)
+            ve.view_id_val[i] = bs.getBits(ve.view_id_len); //u(v)?
+    }
+
+    ve.direct_dependency_flag.resize(MaxLayersMinus1+1);
+    ve.direct_dependency_flag[0].resize(MaxLayersMinus1 + 1);
+    for (i = 1; i <= MaxLayersMinus1; i++) {
+        ve.direct_dependency_flag[i].resize(MaxLayersMinus1+1);
+        for (j = 0; j < i; j++)
+            ve.direct_dependency_flag[i][j] = bs.getBit();
+    }
+
+    updateDependencyFlag(pvps);
+    updateF5(pvps);
+    updateNumIndependentLayers(pvps);
+
+    if (NumIndependentLayers > 1)
+        ve.num_add_layer_sets = bs.getGolombU();
+
+    updateNumLayerSets(pvps);
+
+    updateF8(pvps);
+ 
+    ve.highest_layer_idx_plus1.resize(ve.num_add_layer_sets);
+    for (i = 0; i < ve.num_add_layer_sets; i++) {
+        ve.highest_layer_idx_plus1[i].resize(NumIndependentLayers);
+        for (j = 1; j < NumIndependentLayers; j++) {
+            int len = ceil(log2(NumLayersInTreePartition[j] + 1));
+            ve.highest_layer_idx_plus1[i][j] = bs.getBits(len); //u(v)
+        }
+    }
+
+    ve.vps_sub_layers_max_minus1_present_flag = bs.getBit();
+    if (ve.vps_sub_layers_max_minus1_present_flag) {
+        ve.sub_layers_vps_max_minus1.resize(MaxLayersMinus1+1);
+        for (i = 0; i <= MaxLayersMinus1; i++)
+            ve.sub_layers_vps_max_minus1[i] = bs.getBits(3);
+    }
+    ve.max_tid_ref_present_flag = bs.getBit();
+           
+    if (ve.max_tid_ref_present_flag) {
+        ve.max_tid_il_ref_pics_plus1.resize(MaxLayersMinus1);
+        for (i = 0; i < MaxLayersMinus1; i++) {
+            ve.max_tid_il_ref_pics_plus1[i].resize(MaxLayersMinus1+1);
+            for (j = i + 1; j <= MaxLayersMinus1; j++)
+                if (ve.direct_dependency_flag[j][i])
+                    ve.max_tid_il_ref_pics_plus1[i][j] = bs.getBits(3);
+        }
+    }
+    ve.default_ref_layers_active_flag = bs.getBit();
+    ve.vps_num_profile_tier_level_minus1 = bs.getGolombU();
+    ve.vps_profile_present_flag.resize(ve.vps_num_profile_tier_level_minus1+1);
+    for (i = pvps->vps_base_layer_internal_flag ? 2 : 1; i <= ve.vps_num_profile_tier_level_minus1; i++) {
+        ve.vps_profile_present_flag[i] = bs.getBit();
+    }
+    if (NumLayerSets > 1) {
+        ve.num_add_olss = bs.getGolombU();
+        ve.default_output_layer_idc = bs.getBits(2);
+    }
+    defaultOutputLayerIdc = std::min((int)ve.default_output_layer_idc, 2);
+
+    NumOutputLayerSets = ve.num_add_olss + NumLayerSets; //Formula
+
+
+    updateNumLayersInIdList(ve.num_add_olss, pvps); //zorro ???
+
+
+    ve.layer_set_idx_for_ols_minus1.resize(NumOutputLayerSets);
+    ve.output_layer_flag.resize(NumOutputLayerSets);
+    ve.profile_tier_level_idx.resize(NumOutputLayerSets);
+
+    ve.alt_output_layer_flag.resize(NumOutputLayerSets);
+
+    ProcessOlsIdxToLsIdx(0, pvps);
+    ProcessNumOutputLayersInOutputLayerSet(pvps);
+
+    for (i = 1; i < NumOutputLayerSets; i++) {
+        int len = ceil(log2(NumLayerSets - 1));
+        if (NumLayerSets > 2 && i >= NumLayerSets)
+            ve.layer_set_idx_for_ols_minus1[i] = bs.getBits(len);//u(v)
+
+        ProcessOlsIdxToLsIdx(i, pvps);
+
+        if (i > pvps->vps_num_layer_sets_minus1 || defaultOutputLayerIdc == 2) {
+            ve.output_layer_flag[i].resize(NumLayersInIdList[OlsIdxToLsIdx[i]]);
+
+            for (j = 0; j < NumLayersInIdList[OlsIdxToLsIdx[i]]; j++)
+                ve.output_layer_flag[i][j] = bs.getBit();
+        }
+
+        int profile_tier_level_idx_len = ceil(log2(ve.vps_num_profile_tier_level_minus1 + 1));
+        ve.profile_tier_level_idx[i].resize(NumLayersInIdList[OlsIdxToLsIdx[i]]);
+        for (j = 0; j < NumLayersInIdList[OlsIdxToLsIdx[i]]; j++) {
+            if (NecessaryLayerFlag[i][j] && pvps->vps_extension.vps_num_profile_tier_level_minus1 > 0)
+                ve.profile_tier_level_idx[i][j] = bs.getBits(profile_tier_level_idx_len); //u(v)
+        }
+        if (NumOutputLayersInOutputLayerSet[i] == 1 && NumDirectRefLayers[OlsHighestOutputLayerId[i]] > 0)
+            ve.alt_output_layer_flag[i] = bs.getBit();
+    }
+
+   
+    updateOutputLayerFlag(pvps);   ///???
+    updateMaxSubLayersInLayerSetMinus1(pvps);
+
+    ve.vps_num_rep_formats_minus1 = bs.getGolombU();
+    ve.rep_format.resize(ve.vps_num_rep_formats_minus1+1);
+    for (i = 0; i <= ve.vps_num_rep_formats_minus1; i++) {
+        ve.rep_format.push_back(processRepFormat(bs));
+    }
+    if (ve.vps_num_rep_formats_minus1 > 0)
+        ve.rep_format_idx_present_flag = bs.getBit();
+
+    if (ve.rep_format_idx_present_flag)
+    {
+        int len = ceil(log2(ve.vps_num_rep_formats_minus1 + 1));
+        ve.vps_rep_format_idx.resize(MaxLayersMinus1+1);
+        for (i = pvps->vps_base_layer_internal_flag ? 1 : 0; i <= MaxLayersMinus1; i++) {
+            ve.vps_rep_format_idx[i] = bs.getBits(len); //u(v)
+        }
+    }
+    ve.max_one_active_ref_layer_flag = bs.getBit();
+    ve.vps_poc_lsb_aligned_flag = bs.getBit();
+    ve.poc_lsb_not_present_flag.resize(MaxLayersMinus1+1);
+    for (i = 1; i <= MaxLayersMinus1; i++)
+        if (NumDirectRefLayers[ve.layer_id_in_nuh[i]] == 0)
+            ve.poc_lsb_not_present_flag[i] = bs.getBit();
+
+    ve.dpb_size = processDpbSize(pvps, bs);
+    ve.direct_dep_type_len_minus2 = bs.getGolombU();
+    ve.direct_dependency_all_layers_flag = bs.getBit();
+    int direct_dep_type_len = ve.direct_dep_type_len_minus2 + 2;
+    if (ve.direct_dependency_all_layers_flag) {
+         ve.direct_dependency_all_layers_type = bs.getBits(direct_dep_type_len); //u(v)
+    }
+    else {
+        ve.direct_dependency_type.resize(MaxLayersMinus1+1);
+        for (i = pvps->vps_base_layer_internal_flag ? 1 : 2; i <= MaxLayersMinus1; i++) {
+            ve.direct_dependency_type[i].resize(i);
+            for (j = pvps->vps_base_layer_internal_flag ? 0 : 1; j < i; j++)
+                if (ve.direct_dependency_flag[i][j])
+                    ve.direct_dependency_type[i][j] = bs.getBits(direct_dep_type_len); //u(v)  
+        }
+    }
+    ve.vps_non_vui_extension_length = bs.getGolombU();
+    ve.vps_non_vui_extension_data_byte.resize(ve.vps_non_vui_extension_length+1);
+    for (i = 1; i <= ve.vps_non_vui_extension_length; i++)
+        ve.vps_non_vui_extension_data_byte[i] = bs.getBits(8);
+    ve.vps_vui_present_flag = bs.getBit();
+    if (ve.vps_vui_present_flag) {
+        bs.skipBitsForByteAlign();
+        ve.vps_vui = processVpsVui(pvps, bs);
+    }
+}
+
+SpsRangeExtension HevcParserImpl::processSpsRangeExtension(BitstreamReader& bs)
+{
+    SpsRangeExtension sre;
+    sre.toDefault();
+
+    sre.transform_skip_rotation_enabled_flag = bs.getBits(1);
+    sre.transform_skip_context_enabled_flag = bs.getBits(1);
+    sre.implicit_rdpcm_enabled_flag = bs.getBits(1);
+    sre.explicit_rdpcm_enabled_flag = bs.getBits(1);
+
+    sre.extended_precision_processing_flag = bs.getBits(1);
+
+    sre.intra_smoothing_disabled_flag = bs.getBits(1);
+    sre.high_precision_offsets_enabled_flag = bs.getBits(1);
+    sre.persistent_rice_adaptation_enabled_flag = bs.getBits(1);
+    sre.cabac_bypass_alignment_enabled_flag = bs.getBits(1);
+
+    return sre;
+}
+
+Sps3dExtension  HevcParserImpl::processSps3dExtension(BitstreamReader& bs)
+{
+    Sps3dExtension s3e;
+    s3e.toDefault();
+
+
+ 
+
+    for (int i = 0; i <= 1;i++) {
+        s3e.iv_di_mc_enabled_flag[i] = bs.getBits(1);
+        s3e.iv_mv_scal_enabled_flag[i] = bs.getBits(1);
+        std::cout << __FUNCTION__ << " s3e.iv_di_mc_enabled_flag["<<i<<"] " << static_cast<int>(s3e.iv_di_mc_enabled_flag[i]) << std::endl;
+
+        std::cout << __FUNCTION__ << " pre.iv_mv_scal_enabled_flag[" << i << "] " << static_cast<int>(s3e.iv_mv_scal_enabled_flag[i]) << std::endl;
+
+        if (i == 0) {
+            s3e.log2_ivmc_sub_pb_size_minus3[i] = bs.getGolombU();
+
+            s3e.iv_res_pred_enabled_flag[i] = bs.getBits(1);
+            s3e.depth_ref_enabled_flag[i] = bs.getBits(1);
+            s3e.vsp_mc_enabled_flag[i] = bs.getBits(1);
+            s3e.dbbp_enabled_flag[i] = bs.getBits(1);
+        }
+        else {
+            s3e.tex_mc_enabled_flag[i] = bs.getBits(1);
+            s3e.log2_texmc_sub_pb_size_minus3[i] = bs.getGolombU();
+            s3e.intra_contour_enabled_flag[i] = bs.getBits(1);
+            s3e.intra_dc_only_wedge_enabled_flag[i] = bs.getBits(1);
+            s3e.cqt_cu_part_pred_enabled_flag[i] = bs.getBits(1);
+            s3e.inter_dc_only_enabled_flag[i] = bs.getBits(1);
+            s3e.skip_intra_enabled_flag[i] = bs.getBits(1);
+        }
+    }
+    return s3e;
+}
+
+PpsRangeExtension HevcParserImpl::processPpsRangeExtension(std::shared_ptr<PPS> ppps, BitstreamReader& bs)
+{
+    PpsRangeExtension pre;
+    pre.toDefault();
+
+   
+
+    if (ppps->transform_skip_enabled_flag)
+        pre.log2_max_transform_skip_block_size_minus2 = bs.getGolombU();
+
+    std::cout << __FUNCTION__ << " pre.log2_max_transform_skip_block_size_minus2 " << static_cast<int>(pre.log2_max_transform_skip_block_size_minus2 )<< std::endl;
+
+
+    pre.cross_component_prediction_enabled_flag = bs.getBits(1);
+    pre.chroma_qp_offset_list_enabled_flag = bs.getBits(1);
+
+    if (pre.chroma_qp_offset_list_enabled_flag) {
+        pre.diff_cu_chroma_qp_offset_depth = bs.getGolombU();
+        pre.chroma_qp_offset_list_len_minus1 = bs.getGolombU();
+        for (int i = 0; i <= pre.chroma_qp_offset_list_len_minus1; i++) {
+            pre.cb_qp_offset_list[i] = bs.getGolombS();
+            pre.cr_qp_offset_list[i] = bs.getGolombS();
+        }
+    }
+    pre.log2_sao_offset_scale_luma = bs.getGolombU();
+    pre.log2_sao_offset_scale_chroma = bs.getGolombU();
+    return pre;
+}
+
+PpsMultilayerExtension HevcParserImpl::processPpsMultilayerExtension(std::shared_ptr<PPS> ppps, BitstreamReader& bs)
+{
+    PpsMultilayerExtension pme;
+
+    
+    pme.poc_reset_info_present_flag = bs.getBits(1);
+    pme.pps_infer_scaling_list_flag = bs.getBits(1);
+    if (pme.pps_infer_scaling_list_flag)
+      pme.pps_scaling_list_ref_layer_id = bs.getBits(6);
+    pme.num_ref_loc_offsets = bs.getGolombU();
+
+    std::cout << __FUNCTION__ << " pme.pps_infer_scaling_list_flag " << static_cast<int>(pme.pps_infer_scaling_list_flag) << std::endl;
+
+
+
+    pme.ref_loc_offset_layer_id.resize(pme.num_ref_loc_offsets);
+    pme.scaled_ref_layer_offset_present_flag.resize(pme.num_ref_loc_offsets);
+    pme.scaled_ref_layer_left_offset.resize(pme.num_ref_loc_offsets);
+    pme.scaled_ref_layer_top_offset.resize(pme.num_ref_loc_offsets);
+    pme.scaled_ref_layer_right_offset.resize(pme.num_ref_loc_offsets);
+    pme.scaled_ref_layer_bottom_offset.resize(pme.num_ref_loc_offsets);
+    pme.ref_region_offset_present_flag.resize(pme.num_ref_loc_offsets);
+    pme.ref_region_left_offset.resize(pme.num_ref_loc_offsets);
+    pme.ref_region_top_offset.resize(pme.num_ref_loc_offsets);
+    pme.ref_region_right_offset.resize(pme.num_ref_loc_offsets);
+    pme.ref_region_bottom_offset.resize(pme.num_ref_loc_offsets);
+    pme.resample_phase_set_present_flag.resize(pme.num_ref_loc_offsets);
+    pme.phase_hor_luma.resize(pme.num_ref_loc_offsets);
+    pme.phase_ver_luma.resize(pme.num_ref_loc_offsets);
+    pme.phase_hor_chroma_plus8.resize(pme.num_ref_loc_offsets);
+    pme.phase_ver_chroma_plus8.resize(pme.num_ref_loc_offsets);
+  
+    for (int i = 0; i < pme.num_ref_loc_offsets; i++)
+    {
+        pme.ref_loc_offset_layer_id[i] = bs.getBits(6);
+        pme.scaled_ref_layer_offset_present_flag[i] = bs.getBits(1);
+        if(pme.scaled_ref_layer_offset_present_flag[i]) {
+            pme.scaled_ref_layer_left_offset[i] = bs.getGolombS();
+            pme.scaled_ref_layer_top_offset[i] = bs.getGolombS();
+            pme.scaled_ref_layer_right_offset[i] = bs.getGolombS();
+            pme.scaled_ref_layer_bottom_offset[i] = bs.getGolombS();
+
+        }
+        pme.ref_region_offset_present_flag[i] = bs.getBits(1);
+        if (pme.ref_region_offset_present_flag[i]) {
+            pme.ref_region_left_offset[i] = bs.getGolombS();
+            pme.ref_region_top_offset[i] = bs.getGolombS();
+            pme.ref_region_right_offset[i] = bs.getGolombS();
+            pme.ref_region_bottom_offset[i] = bs.getGolombS();
+        }
+        pme.resample_phase_set_present_flag[i] = bs.getBits(1);
+        if (pme.resample_phase_set_present_flag[i]) {
+            pme.phase_hor_luma[i] = bs.getGolombU();
+            pme.phase_ver_luma[i] = bs.getGolombU();
+            pme.phase_hor_chroma_plus8[i] = bs.getGolombU();
+            pme.phase_ver_chroma_plus8[i] = bs.getGolombU();
+        }
+    }
+    pme.colour_mapping_enabled_flag = bs.getBits(1);
+    if (pme.colour_mapping_enabled_flag) {
+        pme.colour_mapping_table = processColourMappingTable(bs);
+    }
+    return pme;
+}
+
+//called
+Pps3dExtension HevcParserImpl::processPps3dExtension(std::shared_ptr<PPS> ppps, BitstreamReader& bs)
+{
+    Pps3dExtension p3e;
+    p3e.toDefault();
+
+    p3e.dlts_present_flag = bs.getBits(1);
+    std::cout << __FUNCTION__ << " p3e.dlts_present_flag " << static_cast<int>(p3e.dlts_present_flag )<< std::endl;
+
+
+    if (p3e.dlts_present_flag) {
+        p3e.pps_depth_layers_minus1 = bs.getBits(6);
+
+        std::cout << __FUNCTION__ << " p3e.pps_depth_layers_minus1 " << static_cast<int>(p3e.pps_depth_layers_minus1) << std::endl;
+
+
+        p3e.pps_bit_depth_for_depth_layers_minus8 = bs.getBits(4);
+
+        p3e.dlt_flag.resize(p3e.pps_depth_layers_minus1 + 1);
+        p3e.dlt_pred_flag.resize(p3e.pps_depth_layers_minus1 + 1);;
+        p3e.dlt_val_flags_present_flag.resize(p3e.pps_depth_layers_minus1 + 1);
+        p3e.dlt_value_flag.resize(p3e.pps_depth_layers_minus1+1);
+        int depthMaxValue = (1 << (p3e.pps_bit_depth_for_depth_layers_minus8 + 8)) - 1;
+        for (int i = 0; i <= p3e.pps_depth_layers_minus1; i++) {
+            p3e.dlt_flag[i] = bs.getBits(1);
+            if (p3e.dlt_flag[i]) {
+                p3e.dlt_pred_flag[i] = bs.getBits(1);
+            }
+            if (!p3e.dlt_pred_flag[i]) {
+                p3e.dlt_val_flags_present_flag[i] = bs.getBits(1);
+            }
+            if (p3e.dlt_val_flags_present_flag[i]) {
+                p3e.dlt_value_flag[i].resize(depthMaxValue+1);
+                for (int j = 0; j <= depthMaxValue; j++) {
+                    p3e.dlt_value_flag[i][j] = bs.getBits(1);
+                }
+            }
+            else {
+                p3e.delta_dlt.push_back(processDeltaDlt(p3e.pps_bit_depth_for_depth_layers_minus8, bs));
+            }
+        }      
+    }
+
+    return p3e;
+}
+
+DeltaDlt HevcParserImpl::processDeltaDlt(int pps_bit_depth_for_depth_layers_minus8, BitstreamReader& bs)
+{
+    DeltaDlt dd;
+    dd.toDefault();
+
+    std::cout <<__FUNCTION__<< " pps_bit_depth_for_depth_layers_minus8 " << static_cast<int>(pps_bit_depth_for_depth_layers_minus8)<<std::endl;
+    int num_val_delta_dlt_len = pps_bit_depth_for_depth_layers_minus8 + 8;
+    dd.num_val_delta_dlt = bs.getBits(num_val_delta_dlt_len); //u(v)
+    if (dd.num_val_delta_dlt > 0) {
+        if (dd.num_val_delta_dlt > 1) {
+            dd.max_diff = bs.getBits(num_val_delta_dlt_len); //u(v)
+        }
+        if (dd.num_val_delta_dlt > 2 && dd.max_diff > 0) {
+            int min_diff_minus1_len = ceil(log2(dd.max_diff + 1));
+            dd.min_diff_minus1 = bs.getBits(min_diff_minus1_len); //u(v)
+        }
+        dd.delta_dlt_val0 = bs.getBits(num_val_delta_dlt_len); //u(v)
+        if (dd.max_diff > (dd.min_diff_minus1 + 1)) {
+            int minDiff = dd.min_diff_minus1 + 1;
+            int delta_val_diff_minus_min_len = ceil(log2(dd.max_diff - minDiff + 1));
+            dd.delta_val_diff_minus_min.resize(dd.num_val_delta_dlt);
+            for (int k = 1; k < dd.num_val_delta_dlt; k++) {
+                dd.delta_val_diff_minus_min[k]= bs.getBits(delta_val_diff_minus_min_len); //u(v)
+            }
+        }
+    }
+
+    return dd;
+}
+
+ColourMappingTable HevcParserImpl::processColourMappingTable(BitstreamReader& bs)
+{
+    ColourMappingTable cmt;
+    cmt.toDefault();
+
+    cmt.num_cm_ref_layers_minus1 = bs.getGolombU();
+    cmt.cm_ref_layer_id.resize(cmt.num_cm_ref_layers_minus1+1);
+    for (int i = 0; i <= cmt.num_cm_ref_layers_minus1; i++) {
+        cmt.cm_ref_layer_id[i]= bs.getBits(6);
+    }
+    cmt.cm_octant_depth = bs.getBits(2);
+    cmt.cm_y_part_num_log2 = bs.getBits(2);
+    cmt.luma_bit_depth_cm_input_minus8 = bs.getGolombU();
+    cmt.chroma_bit_depth_cm_input_minus8 = bs.getGolombU();
+    cmt.luma_bit_depth_cm_output_minus8 = bs.getGolombU();
+    cmt.chroma_bit_depth_cm_output_minus8 = bs.getGolombU();
+    cmt.cm_res_quant_bits = bs.getBits(2);
+    cmt.cm_delta_flc_bits_minus1 = bs.getBits(2);
+    if (cmt.cm_octant_depth == 1) {
+        cmt.cm_adapt_threshold_u_delta = bs.getGolombS();
+        cmt.cm_adapt_threshold_v_delta = bs.getGolombS();
+    }
+    return cmt;
+}
+
+VpsVui HevcParserImpl::processVpsVui(std::shared_ptr<VPS> pvps, BitstreamReader& bs)
+{
+    int i, j;
+    VpsVui vv;
+    vv.toDefault();
+    vv.cross_layer_pic_type_aligned_flag = bs.getBit();
+    if (!vv.cross_layer_pic_type_aligned_flag)
+        vv.cross_layer_irap_aligned_flag = bs.getBit();
+    if (vv.cross_layer_irap_aligned_flag)
+        vv.all_layers_idr_aligned_flag = bs.getBit();
+    vv.bit_rate_present_vps_flag = bs.getBit();
+    vv.pic_rate_present_vps_flag = bs.getBit();
+    vv.bit_rate_present_flag.resize(NumLayerSets);
+    vv.pic_rate_present_flag.resize(NumLayerSets);
+    vv.avg_bit_rate.resize(NumLayerSets);
+    vv.max_bit_rate.resize(NumLayerSets);
+    vv.constant_pic_rate_idc.resize(NumLayerSets);
+    vv.avg_pic_rate.resize(NumLayerSets);
+
+    if (vv.bit_rate_present_vps_flag ||  vv.pic_rate_present_vps_flag)
+        for (i = pvps->vps_base_layer_internal_flag ? 0 : 1; i < NumLayerSets; i++) {
+            vv.bit_rate_present_flag[i].resize(MaxSubLayersInLayerSetMinus1[i]+1);
+            vv.pic_rate_present_flag[i].resize(MaxSubLayersInLayerSetMinus1[i] + 1);
+            vv.avg_bit_rate[i].resize(MaxSubLayersInLayerSetMinus1[i] + 1);
+            vv.max_bit_rate[i].resize(MaxSubLayersInLayerSetMinus1[i] + 1);
+            vv.constant_pic_rate_idc[i].resize(MaxSubLayersInLayerSetMinus1[i] + 1);
+            vv.avg_pic_rate[i].resize(MaxSubLayersInLayerSetMinus1[i] + 1);
+            for (j = 0; j <= MaxSubLayersInLayerSetMinus1[i]; j++) {
+                if (vv.bit_rate_present_vps_flag)
+                    vv.bit_rate_present_flag[i][j] = bs.getBit();
+                if (vv.pic_rate_present_vps_flag)
+                    vv.pic_rate_present_flag[i][j] = bs.getBit();
+                if (vv.bit_rate_present_flag[i][j]) {
+                    vv.avg_bit_rate[i][j] = bs.getBits(16);
+                    vv.max_bit_rate[i][j] = bs.getBits(16);
+                }
+                if (vv.pic_rate_present_flag[i][j]) {
+                    vv.constant_pic_rate_idc[i][j] = bs.getBits(2);
+                    vv.avg_pic_rate[i][j] = bs.getBits(16);
+                }
+            }
+        }
+    vv.video_signal_info_idx_present_flag = bs.getBit();
+    if (vv.video_signal_info_idx_present_flag)
+        vv.vps_num_video_signal_info_minus1 = bs.getBits(4);
+    for (i = 0; i <= vv.vps_num_video_signal_info_minus1; i++) {
+        vv.video_signal_info.push_back( processVideoSignalInfo(bs));
+    }
+    vv.vps_video_signal_info_idx.resize(MaxLayersMinus1+1);
+    if (vv.video_signal_info_idx_present_flag && vv.vps_num_video_signal_info_minus1 > 0)
+        for (i = pvps->vps_base_layer_internal_flag ? 0 : 1; i <= MaxLayersMinus1; i++)
+            vv.vps_video_signal_info_idx[i] = bs.getBits(4);
+    vv.tiles_not_in_use_flag = bs.getBit();
+    vv.tiles_in_use_flag.resize(MaxLayersMinus1 + 1);
+    vv.loop_filter_not_across_tiles_flag.resize(MaxLayersMinus1 + 1);
+    vv.tile_boundaries_aligned_flag.resize(MaxLayersMinus1 + 1);
+    if (!vv.tiles_not_in_use_flag) {
+        for (i = pvps->vps_base_layer_internal_flag ? 0 : 1; i <= MaxLayersMinus1; i++) {
+            vv.tiles_in_use_flag[i] = bs.getBit();
+            if (vv.tiles_in_use_flag[i])
+                vv.loop_filter_not_across_tiles_flag[i] = bs.getBit();
+        }
+        for (i = pvps->vps_base_layer_internal_flag ? 1 : 2; i <= MaxLayersMinus1; i++) {
+            vv.tile_boundaries_aligned_flag[i].resize(NumDirectRefLayers[pvps->vps_extension.layer_id_in_nuh[i]]);
+            for (j = 0; j < NumDirectRefLayers[pvps->vps_extension.layer_id_in_nuh[i]]; j++) {
+                int layerIdx = LayerIdxInVps[IdDirectRefLayer[pvps->vps_extension.layer_id_in_nuh[i]][j]];
+                if (vv.tiles_in_use_flag[i] && vv.tiles_in_use_flag[layerIdx])
+                    vv.tile_boundaries_aligned_flag[i][j] = bs.getBit();
+            }
+        }
+    }
+    vv.wpp_not_in_use_flag = bs.getBit();
+    vv.wpp_in_use_flag.resize(MaxLayersMinus1 + 1);
+    if (!vv.wpp_not_in_use_flag)
+        for (i = pvps->vps_base_layer_internal_flag ? 0 : 1; i <= MaxLayersMinus1; i++)
+            vv.wpp_in_use_flag[i] = bs.getBit();
+            
+    vv.single_layer_for_non_irap_flag = bs.getBit();
+    vv.higher_layer_irap_skip_flag = bs.getBit();
+    vv.ilp_restricted_ref_layers_flag = bs.getBit();
+    if (vv.ilp_restricted_ref_layers_flag) {
+        vv.min_spatial_segment_offset_plus1.resize(MaxLayersMinus1 + 1);
+        vv.ctu_based_offset_enabled_flag.resize(MaxLayersMinus1 + 1);
+        vv.min_horizontal_ctu_offset_plus1.resize(MaxLayersMinus1 + 1);
+        for (i = 1; i <= MaxLayersMinus1; i++) {
+            vv.min_spatial_segment_offset_plus1[i].resize(NumDirectRefLayers[pvps->vps_extension.layer_id_in_nuh[i]]);
+            vv.ctu_based_offset_enabled_flag[i].resize(NumDirectRefLayers[pvps->vps_extension.layer_id_in_nuh[i]]);
+            vv.min_horizontal_ctu_offset_plus1[i].resize(NumDirectRefLayers[pvps->vps_extension.layer_id_in_nuh[i]]);
+
+            for (j = 0; j < NumDirectRefLayers[pvps->vps_extension.layer_id_in_nuh[i]]; j++) {
+                if (pvps->vps_base_layer_internal_flag || IdDirectRefLayer[pvps->vps_extension.layer_id_in_nuh[i]][j] > 0) {
+                    vv.min_spatial_segment_offset_plus1[i][j] = bs.getGolombU();
+
+                    if (vv.min_spatial_segment_offset_plus1[i][j] > 0) {
+                        vv.ctu_based_offset_enabled_flag[i][j] = bs.getBit();
+                        if (vv.ctu_based_offset_enabled_flag[i][j])
+                            vv.min_horizontal_ctu_offset_plus1[i][j] = bs.getGolombU();
+                    }
+                }
+            }
+        }
+    }
+    vv.vps_vui_bsp_hrd_present_flag = bs.getBit();
+    if (vv.vps_vui_bsp_hrd_present_flag) {
+        vv.vps_vui_bsp_hrd_params = processVpsVuiBspHrdParams(pvps, bs);
+    }
+    vv.base_layer_parameter_set_compatibility_flag.resize(MaxLayersMinus1 + 1);
+    for (i = 1; i <= MaxLayersMinus1; i++)
+        if (NumDirectRefLayers[pvps->vps_extension.layer_id_in_nuh[i]] == 0)
+            vv.base_layer_parameter_set_compatibility_flag[i] = bs.getBit();
+
+    return vv;
+}
+
+//vps_vui_bsp_hrd_params, resize ready
+VpsVuiBspHrdParams HevcParserImpl::processVpsVuiBspHrdParams(std::shared_ptr<VPS> pvps, BitstreamReader& bs)
+{
+    int i, j, h, k, l, r, t;
+    VpsVuiBspHrdParams vvbhp;
+    vvbhp.vps_num_add_hrd_params = bs.getBit();
+    vvbhp.cprms_add_present_flag.resize(pvps->vps_num_hrd_parameters + vvbhp.vps_num_add_hrd_params);
+    vvbhp.num_sub_layer_hrd_minus1.resize(pvps->vps_num_hrd_parameters + vvbhp.vps_num_add_hrd_params);
+    for (i = pvps->vps_num_hrd_parameters; i < pvps->vps_num_hrd_parameters + vvbhp.vps_num_add_hrd_params; i++) {
+        if (i > 0)
+            vvbhp.cprms_add_present_flag[i] = bs.getBit();
+        vvbhp.num_sub_layer_hrd_minus1[i] = bs.getGolombU();
+        vvbhp.hrd_parameters.push_back(processHrdParameters(vvbhp.cprms_add_present_flag[i], vvbhp.num_sub_layer_hrd_minus1[i], bs));
+    }
+   if (pvps->vps_num_hrd_parameters + vvbhp.vps_num_add_hrd_params > 0) {
+       vvbhp.num_signalled_partitioning_schemes.resize(NumOutputLayerSets);
+       vvbhp.num_partitions_in_scheme_minus1.resize(NumOutputLayerSets);
+       vvbhp.layer_included_in_partition_flag.resize(NumOutputLayerSets);
+     
+       vvbhp.num_bsp_schedules_minus1.resize(NumOutputLayerSets);
+
+
+       vvbhp.bsp_hrd_idx.resize(NumOutputLayerSets);
+       vvbhp.bsp_sched_idx.resize(NumOutputLayerSets);
+       int bsp_hrd_idx_len = ceil(log2(pvps->vps_num_hrd_parameters + vvbhp.vps_num_add_hrd_params));
+       for (h = 1; h < NumOutputLayerSets; h++) {
+            vvbhp.num_signalled_partitioning_schemes[h] = bs.getGolombU();
+           
+            vvbhp.num_partitions_in_scheme_minus1[h].resize(vvbhp.num_signalled_partitioning_schemes[h] + 1);
+            vvbhp.layer_included_in_partition_flag[h].resize(vvbhp.num_signalled_partitioning_schemes[h] + 1);
+
+            for (j = 1; j < vvbhp.num_signalled_partitioning_schemes[h] + 1; j++) {
+                vvbhp.num_partitions_in_scheme_minus1[h][j] = bs.getGolombU();
+                vvbhp.layer_included_in_partition_flag[h][j].resize(vvbhp.num_partitions_in_scheme_minus1[h][j] + 1);
+
+                for (k = 0; k <= vvbhp.num_partitions_in_scheme_minus1[h][j]; k++) {
+                    vvbhp.layer_included_in_partition_flag[h][j][k].resize (NumLayersInIdList[OlsIdxToLsIdx[h]]);
+
+                    for (r = 0; r < NumLayersInIdList[OlsIdxToLsIdx[h]]; r++)
+                        vvbhp.layer_included_in_partition_flag[h][j][k][r] = bs.getBit();
+                }
+            }
+
+            for (i = 0; i < vvbhp.num_signalled_partitioning_schemes[h] + 1; i++) {
+                vvbhp.num_bsp_schedules_minus1[h].resize(MaxSubLayersInLayerSetMinus1[OlsIdxToLsIdx[h]]+1);
+                vvbhp.bsp_hrd_idx[h].resize(MaxSubLayersInLayerSetMinus1[OlsIdxToLsIdx[h]] + 1);
+                vvbhp.bsp_sched_idx[h].resize(MaxSubLayersInLayerSetMinus1[OlsIdxToLsIdx[h]] + 1);
+
+                for (t = 0; t <= MaxSubLayersInLayerSetMinus1[OlsIdxToLsIdx[h]]; t++) {
+                    vvbhp.num_bsp_schedules_minus1[h][i][t] = bs.getGolombU();
+
+                    vvbhp.bsp_hrd_idx[h][i].resize(vvbhp.num_bsp_schedules_minus1[h][i][t] + 1);
+                    vvbhp.bsp_sched_idx[h][i].resize(vvbhp.num_bsp_schedules_minus1[h][i][t] + 1);
+
+                    for (j = 0; j <= vvbhp.num_bsp_schedules_minus1[h][i][t]; j++) {
+                        vvbhp.bsp_hrd_idx[h][i][j].resize(vvbhp.num_partitions_in_scheme_minus1[h][i] + 1);
+                        vvbhp.bsp_sched_idx[h][i][j].resize(vvbhp.num_partitions_in_scheme_minus1[h][i] + 1);
+                        for (k = 0; k <= vvbhp.num_partitions_in_scheme_minus1[h][i]; k++) {
+                            if (pvps->vps_num_hrd_parameters + vvbhp.vps_num_add_hrd_params > 1)
+                                vvbhp.bsp_hrd_idx[h][i][t][j][k] = bs.getBits(bsp_hrd_idx_len); //u(v)
+                            vvbhp.bsp_sched_idx[h][i][t][j][k] = bs.getGolombU();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return vvbhp;
+}
 
 void HevcParserImpl::processSPS(std::shared_ptr<SPS> psps, BitstreamReader &bs, const Parser::Info &info)
 {
   psps -> sps_video_parameter_set_id = bs.getBits(4);
+  vps_nuhLayerIdA = psps->sps_video_parameter_set_id; //the active VPS.
+
   psps -> sps_max_sub_layers_minus1 = bs.getBits(3);
   psps -> sps_temporal_id_nesting_flag = bs.getBits(1);
-  psps -> profile_tier_level = processProfileTierLevel(psps -> sps_max_sub_layers_minus1, bs, info);
+  psps -> profile_tier_level = processProfileTierLevel(1, psps -> sps_max_sub_layers_minus1, bs, info);
 
   psps -> sps_seq_parameter_set_id = bs.getGolombU();
 //  psps -> sps_seq_parameter_set_id = 0;
@@ -677,6 +1421,29 @@ void HevcParserImpl::processSPS(std::shared_ptr<SPS> psps, BitstreamReader &bs, 
   }
 
   psps -> sps_extension_flag = bs.getBits(1);
+  if (psps->sps_extension_flag) {
+      psps->sps_range_extension_flag = bs.getBits(1);
+      psps->sps_multilayer_extension_flag = bs.getBits(1);
+      psps->sps_3d_extension_flag = bs.getBits(1);
+      psps->sps_extension_5bits = bs.getBits(1);
+  }
+  std::cout << __FUNCTION__<<"sps_extension_flag" << static_cast<int>(psps->sps_extension_flag)
+      << "sps_range_extension_flag" << static_cast<int>(psps->sps_range_extension_flag)
+      << "sps_multilayer_extension_flag" << static_cast<int>(psps->sps_multilayer_extension_flag)
+      << "sps_3d_extension_flag" << static_cast<int>(psps->sps_3d_extension_flag)
+      << "sps_extension_5bits" << static_cast<int>(psps->sps_extension_5bits)
+      << std::endl;
+  if (psps->sps_range_extension_flag) {
+      psps-> sps_range_extension = processSpsRangeExtension(bs);
+  }
+
+  if (psps->sps_multilayer_extension_flag) {
+      psps->inter_view_mv_vert_constraint_flag = bs.getBits(1); //sps_multilayer_extension(); /* specified in Annex F */
+  }
+  if (psps->sps_3d_extension_flag) {
+      psps->sps_3d_extension = processSps3dExtension(bs); /* specified in Annex I */
+  }
+  bs.skipBitsForByteAlign();
 }
 
 
@@ -963,25 +1730,51 @@ void HevcParserImpl::processSEI(std::shared_ptr<SEI> psei, BitstreamReader &bs, 
 }
 
 
-ProfileTierLevel HevcParserImpl::processProfileTierLevel(std::size_t max_sub_layers_minus1, BitstreamReader &bs, const Parser::Info &info)
+ProfileTierLevel HevcParserImpl::processProfileTierLevel(uint8_t profilePresentFlag, std::size_t max_sub_layers_minus1, BitstreamReader &bs, const Parser::Info &info)
 {
   ProfileTierLevel ptl;
 
   ptl.toDefault();
 
-  ptl.general_profile_space = bs.getBits(2);
-  ptl.general_tier_flag = bs.getBits(1);
-  ptl.general_profile_idc = bs.getBits(5);
+  if (profilePresentFlag) {
+      ptl.general_profile_space = bs.getBits(2);
+      ptl.general_tier_flag = bs.getBits(1);
+      ptl.general_profile_idc = bs.getBits(5);
 
-  for(std::size_t i=0; i<32; i++)
-    ptl.general_profile_compatibility_flag[i] = bs.getBits(1);
+      for (std::size_t i = 0; i < 32; i++)
+          ptl.general_profile_compatibility_flag[i] = bs.getBits(1);
 
-  ptl.general_progressive_source_flag = bs.getBits(1);
-  ptl.general_interlaced_source_flag = bs.getBits(1);
-  ptl.general_non_packed_constraint_flag = bs.getBits(1);
-  ptl.general_frame_only_constraint_flag = bs.getBits(1);
-  bs.getBits(32);
-  bs.getBits(12);
+      ptl.general_progressive_source_flag = bs.getBits(1);
+      ptl.general_interlaced_source_flag = bs.getBits(1);
+      ptl.general_non_packed_constraint_flag = bs.getBits(1);
+      ptl.general_frame_only_constraint_flag = bs.getBits(1);
+      if (ptl.general_profile_idc == 4 || ptl.general_profile_compatibility_flag[4] || ptl.general_profile_idc == 5
+          || ptl.general_profile_compatibility_flag[5] || ptl.general_profile_idc == 6 || ptl.general_profile_compatibility_flag[6]
+          || ptl.general_profile_idc == 7 || ptl.general_profile_compatibility_flag[7]) {
+          /* The number of bits in this syntax structure is not affected by this condition */
+          ptl.general_max_12bit_constraint_flag = bs.getBits(1);
+          ptl.general_max_10bit_constraint_flag = bs.getBits(1);
+          ptl.general_max_8bit_constraint_flag = bs.getBits(1);
+          ptl.general_max_422chroma_constraint_flag = bs.getBits(1);
+          ptl.general_max_420chroma_constraint_flag = bs.getBits(1);
+          ptl.general_max_monochrome_constraint_flag = bs.getBits(1);
+          ptl.general_intra_constraint_flag = bs.getBits(1);
+          ptl.general_one_picture_only_constraint_flag = bs.getBits(1);
+          ptl.general_lower_bit_rate_constraint_flag = bs.getBits(1);
+          bs.getBits(34);
+      }
+      else {
+          bs.getBits(43);
+      }
+
+      if ((ptl.general_profile_idc >= 1 && ptl.general_profile_idc <= 5) || ptl.general_profile_compatibility_flag[1] || ptl.general_profile_compatibility_flag[2]
+          || ptl.general_profile_compatibility_flag[3] || ptl.general_profile_compatibility_flag[4] || ptl.general_profile_compatibility_flag[5]) {
+          /* The number of bits in this syntax structure is not affected by this condition */
+          ptl.general_inbld_flag = bs.getBits(1);
+      }
+      else
+          bs.getBits(1);
+  }
   ptl.general_level_idc = bs.getBits(8);
 
   ptl.sub_layer_profile_present_flag.resize(max_sub_layers_minus1);
@@ -1010,6 +1803,18 @@ ProfileTierLevel HevcParserImpl::processProfileTierLevel(std::size_t max_sub_lay
   ptl.sub_layer_frame_only_constraint_flag.resize(max_sub_layers_minus1);
   ptl.sub_layer_level_idc.resize(max_sub_layers_minus1);
 
+
+  ptl.sub_layer_max_12bit_constraint_flag.resize(max_sub_layers_minus1);
+  ptl.sub_layer_max_10bit_constraint_flag.resize(max_sub_layers_minus1);
+  ptl.sub_layer_max_8bit_constraint_flag.resize(max_sub_layers_minus1);
+  ptl.sub_layer_max_422chroma_constraint_flag.resize(max_sub_layers_minus1);
+  ptl.sub_layer_max_420chroma_constraint_flag.resize(max_sub_layers_minus1);
+  ptl.sub_layer_max_monochrome_constraint_flag.resize(max_sub_layers_minus1);
+  ptl.sub_layer_intra_constraint_flag.resize(max_sub_layers_minus1);
+  ptl.sub_layer_one_picture_only_constraint_flag.resize(max_sub_layers_minus1);
+  ptl.sub_layer_lower_bit_rate_constraint_flag.resize(max_sub_layers_minus1);
+  ptl.sub_layer_inbld_flag.resize(max_sub_layers_minus1);
+
   for(std::size_t i=0; i<max_sub_layers_minus1; i++)
   {
     if(ptl.sub_layer_profile_present_flag[i])
@@ -1026,8 +1831,34 @@ ProfileTierLevel HevcParserImpl::processProfileTierLevel(std::size_t max_sub_lay
       ptl.sub_layer_interlaced_source_flag[i] = bs.getBits(1);
       ptl.sub_layer_non_packed_constraint_flag[i] = bs.getBits(1);
       ptl.sub_layer_frame_only_constraint_flag[i] = bs.getBits(1);
-      bs.getBits(32);
-      bs.getBits(12);
+
+
+      if (ptl.sub_layer_profile_idc[i] == 4 || ptl.sub_layer_profile_compatibility_flag[i][4] || ptl.sub_layer_profile_idc[i] == 5
+          || ptl.sub_layer_profile_compatibility_flag[i][5] || ptl.sub_layer_profile_idc[i] == 6 || ptl.sub_layer_profile_compatibility_flag[i][6]
+          || ptl.sub_layer_profile_idc[i] == 7 || ptl.sub_layer_profile_compatibility_flag[i][7]) {
+          /* The number of bits in this syntax structure is not affected by this condition */
+          ptl.sub_layer_max_12bit_constraint_flag[i] = bs.getBits(1);
+          ptl.sub_layer_max_10bit_constraint_flag[i] = bs.getBits(1);
+          ptl.sub_layer_max_8bit_constraint_flag[i] = bs.getBits(1);
+          ptl.sub_layer_max_422chroma_constraint_flag[i] = bs.getBits(1);
+          ptl.sub_layer_max_420chroma_constraint_flag[i] = bs.getBits(1);
+          ptl.sub_layer_max_monochrome_constraint_flag[i] = bs.getBits(1);
+          ptl.sub_layer_intra_constraint_flag[i] = bs.getBits(1);
+          ptl.sub_layer_one_picture_only_constraint_flag[i] = bs.getBits(1);
+          ptl.sub_layer_lower_bit_rate_constraint_flag[i] = bs.getBits(1);
+          bs.getBits(34);
+      }
+      else {
+          bs.getBits(43);
+      }
+
+      if ((ptl.sub_layer_profile_idc[i] >= 1 && ptl.sub_layer_profile_idc[i] <= 5) || ptl.sub_layer_profile_compatibility_flag[i][1] || ptl.sub_layer_profile_compatibility_flag[i][2]
+          || ptl.sub_layer_profile_compatibility_flag[i][3] || ptl.sub_layer_profile_compatibility_flag[i][4] || ptl.sub_layer_profile_compatibility_flag[i][5]) {
+          /* The number of bits in this syntax structure is not affected by this condition */
+          ptl.sub_layer_inbld_flag[i] = bs.getBits(1);
+      }
+      else
+          bs.getBits(1);
 
     }
 
@@ -1037,7 +1868,6 @@ ProfileTierLevel HevcParserImpl::processProfileTierLevel(std::size_t max_sub_lay
     }
     else
       ptl.sub_layer_level_idc[i] = 1;
-
   }
 
   return ptl;
@@ -1048,6 +1878,11 @@ void HevcParserImpl::processPPS(std::shared_ptr<PPS> ppps, BitstreamReader &bs, 
 {
   ppps -> pps_pic_parameter_set_id = bs.getGolombU();
   ppps -> pps_seq_parameter_set_id  = bs.getGolombU();
+
+  sps_nuhLayerIdA = ppps->pps_seq_parameter_set_id; //update the active SPS.
+  pps_nuhLayerIdA = ppps->pps_pic_parameter_set_id; //update the active PPS.
+
+
   ppps -> dependent_slice_segments_enabled_flag = bs.getBits(1);
 
   ppps -> output_flag_present_flag = bs.getBits(1);
@@ -1136,6 +1971,30 @@ void HevcParserImpl::processPPS(std::shared_ptr<PPS> ppps, BitstreamReader &bs, 
   ppps -> log2_parallel_merge_level_minus2 = bs.getGolombU();
   ppps -> slice_segment_header_extension_present_flag = bs.getBits(1);
   ppps -> pps_extension_flag = bs.getBits(1);
+  if (ppps->pps_extension_flag) {
+      ppps->pps_range_extension_flag = bs.getBits(1);
+      ppps->pps_multilayer_extension_flag = bs.getBits(1);
+      ppps->pps_3d_extension_flag = bs.getBits(1);
+      ppps->pps_range_extension_flag = bs.getBits(1);
+  }
+  if (ppps->pps_range_extension_flag) {
+      ppps->pps_range_extension = processPpsRangeExtension(ppps, bs);
+  }
+  if (ppps->pps_multilayer_extension_flag) {
+      ppps->pps_multilayer_extension = processPpsMultilayerExtension(ppps, bs);
+  }
+  if (ppps->pps_3d_extension_flag) {
+      ppps->pps_3d_extension = processPps3dExtension(ppps, bs);
+  }
+
+  std::cout<<__FUNCTION__<<"pps_extension_flag"<< static_cast<int>(ppps->pps_extension_flag) <<
+      "pps_extension_flag" << static_cast<int>(ppps->pps_extension_flag) <<
+      "pps_range_extension_flag" << static_cast<int>(ppps->pps_range_extension_flag) <<
+      "pps_multilayer_extension_flag" << static_cast<int>(ppps->pps_multilayer_extension_flag) <<
+      "pps_3d_extension_flag" << static_cast<int>(ppps->pps_3d_extension_flag) <<
+      "pps_range_extension_flag" << static_cast<int>(ppps->pps_range_extension_flag) <<std::endl;
+
+  bs.skipBitsForByteAlign();
 }
 
 
@@ -1339,7 +2198,6 @@ VuiParameters HevcParserImpl::processVuiParameters(std::size_t sps_max_sub_layer
   vui.sar_width = 0;
   vui.sar_height = 0;
 
-
   vui.aspect_ratio_info_present_flag = bs.getBits(1);
 
   if(vui.aspect_ratio_info_present_flag)
@@ -1352,7 +2210,6 @@ VuiParameters HevcParserImpl::processVuiParameters(std::size_t sps_max_sub_layer
       vui.sar_height = bs.getBits(16);
     }
   }
-
 
   vui.overscan_info_present_flag = bs.getBits(1);
   if(vui.overscan_info_present_flag)
@@ -1378,7 +2235,6 @@ VuiParameters HevcParserImpl::processVuiParameters(std::size_t sps_max_sub_layer
       vui.transfer_characteristics = bs.getBits(8);
       vui.matrix_coeffs = bs.getBits(8);
     }
-
   }
 
   vui.chroma_sample_loc_type_top_field = 0;
@@ -1390,7 +2246,6 @@ VuiParameters HevcParserImpl::processVuiParameters(std::size_t sps_max_sub_layer
     vui.chroma_sample_loc_type_top_field = bs.getGolombU();
     vui.chroma_sample_loc_type_bottom_field = bs.getGolombU();
   }
-
 
   vui.neutral_chroma_indication_flag = bs.getBits(1);
   vui.field_seq_flag = bs.getBits(1);
@@ -1445,6 +2300,241 @@ VuiParameters HevcParserImpl::processVuiParameters(std::size_t sps_max_sub_layer
   return vui;
 }
 
+RepFormat HevcParserImpl::processRepFormat(BitstreamReader& bs)
+{
+    RepFormat rf;
+    rf.toDefault();
+    rf.pic_width_vps_in_luma_samples = bs.getBits(16);
+    rf.pic_height_vps_in_luma_samples = bs.getBits(16);
+    rf.chroma_and_bit_depth_vps_present_flag = bs.getBit();
+    if (rf.chroma_and_bit_depth_vps_present_flag) {
+        rf.chroma_format_vps_idc = bs.getBit();
+        if (rf.chroma_format_vps_idc == 3) {
+            rf.separate_colour_plane_vps_flag = bs.getBit();
+        }
+        rf.bit_depth_vps_luma_minus8 = bs.getBits(4);
+        rf.bit_depth_vps_chroma_minus8 = bs.getBits(4);
+    }
+    rf.conformance_window_vps_flag = bs.getBit();
+    if (rf.conformance_window_vps_flag) {
+        rf.conf_win_vps_left_offset = bs.getGolombU();
+        rf.conf_win_vps_right_offset = bs.getGolombU();
+        rf.conf_win_vps_top_offset = bs.getGolombU();
+        rf.conf_win_vps_bottom_offset = bs.getGolombU();
+    }
+
+    return rf;
+}
+
+//(F-7) have called
+void  HevcParserImpl::updateNumLayerSets(std::shared_ptr<VPS> pvps)
+{
+    NumLayerSets = pvps->vps_num_layer_sets_minus1 + 1 + pvps->vps_extension.num_add_layer_sets;
+}
+//(F-8) called
+void  HevcParserImpl::updateF8(std::shared_ptr<VPS> pvps)
+{
+    FirstAddLayerSetIdx = pvps->vps_num_layer_sets_minus1 + 1;
+    LastAddLayerSetIdx = FirstAddLayerSetIdx + pvps->vps_extension.num_add_layer_sets - 1;
+}
+
+//(F-9) called
+void HevcParserImpl::updateNumLayersInIdList(int i, std::shared_ptr<VPS> pvps)
+{
+    int layerNum = 0;
+    int lsIdx = pvps->vps_num_layer_sets_minus1 + 1 + i;
+    LayerSetLayerIdList.resize(NumIndependentLayers);
+
+    for (int treeIdx = 1; treeIdx < NumIndependentLayers; treeIdx++) {
+        LayerSetLayerIdList[lsIdx].resize(pvps->vps_extension.highest_layer_idx_plus1[i][treeIdx]);
+        for (int layerCnt = 0; layerCnt < pvps->vps_extension.highest_layer_idx_plus1[i][treeIdx]; layerCnt++)
+            LayerSetLayerIdList[lsIdx][layerNum++] = TreePartitionLayerIdList[treeIdx][layerCnt];
+    }
+    NumLayersInIdList.resize(lsIdx+1);
+    NumLayersInIdList[lsIdx] = layerNum;
+
+}
+
+void HevcParserImpl::updateOutputLayerFlag(std::shared_ptr<VPS> pvps)
+{
+    //additional, 
+    int i, j;
+    if (defaultOutputLayerIdc == 0 || defaultOutputLayerIdc == 1) {
+        OutputLayerFlag.resize(NumOutputLayerSets);
+        for (i = 0; i <= pvps->vps_num_layer_sets_minus1; i++) {
+            OutputLayerFlag[i].resize(NumLayersInIdList[OlsIdxToLsIdx[i]]);
+            for (j = 0; j < NumLayersInIdList[OlsIdxToLsIdx[i]];j++) {
+                if (defaultOutputLayerIdc == 0 || LayerSetLayerIdList[OlsIdxToLsIdx[i]][j] == vps_nuhLayerIdA) {
+                    OutputLayerFlag[i][j] = 1;
+                }
+                else {
+                    OutputLayerFlag[i][j] = 0;
+                }
+            }
+        }
+    }
+
+    //For i in the range of(defaultOutputLayerIdc = = 2) ? 0 : (vps_num_layer_sets_minus1 + 1) to NumOutputLayerSets − 1, inclusive, and j in the range of 0 to NumLayersInIdList[OlsIdxToLsIdx[i]] − 1, inclusive, the variable OutputLayerFlag[i][j] is set equal to output_layer_flag[i][j].
+    OutputLayerFlag.resize(NumOutputLayerSets);
+    for ( i = (defaultOutputLayerIdc == 2) ? 0 : (pvps->vps_num_layer_sets_minus1 + 1); i < NumOutputLayerSets; i++) {
+        OutputLayerFlag[i].resize(NumLayersInIdList[OlsIdxToLsIdx[i]]);
+        for ( j = 0; j < NumLayersInIdList[OlsIdxToLsIdx[i]];j++) {
+            OutputLayerFlag[i][j] = pvps->vps_extension.output_layer_flag[i][j];
+        }
+    }
+}
+
+//(F-4) called
+void HevcParserImpl::updateDependencyFlag(std::shared_ptr<VPS> pvps)
+{
+    int i, j, k;
+    DependencyFlag.resize(MaxLayersMinus1+1);
+    for (i = 0; i <= MaxLayersMinus1; i++) {
+        DependencyFlag[i].resize(MaxLayersMinus1+1);
+        for (j = 0; j <= MaxLayersMinus1; j++) {
+            DependencyFlag[i][j] = pvps->vps_extension.direct_dependency_flag[i][j];
+            for (k = 0; k < i; k++)
+                if (pvps->vps_extension.direct_dependency_flag[i][k] && DependencyFlag[k][j])
+                    DependencyFlag[i][j] = 1;
+        }
+    }
+}
+
+//(F-5) called
+void HevcParserImpl::updateF5(std::shared_ptr<VPS> pvps)
+{
+    int i, j, d, r, p;
+    IdDirectRefLayer.resize(MaxLayersMinus1+1);
+    IdRefLayer.resize(MaxLayersMinus1 + 1);
+    IdPredictedLayer.resize(MaxLayersMinus1 + 1);
+
+    NumDirectRefLayers.resize(MaxLayersMinus1 + 1);
+    NumRefLayers.resize(MaxLayersMinus1 + 1);
+    NumPredictedLayers.resize(MaxLayersMinus1 + 1);
+
+    for (i = 0; i <= MaxLayersMinus1; i++) {
+        int iNuhLId = pvps->vps_extension.layer_id_in_nuh[i];
+        IdDirectRefLayer[i].resize(MaxLayersMinus1 + 1);
+        IdRefLayer[i].resize(MaxLayersMinus1 + 1);
+        IdPredictedLayer[i].resize(MaxLayersMinus1 + 1);
+
+        for (j = 0, d = 0, r = 0, p = 0; j <= MaxLayersMinus1; j++) { 
+            int jNuhLid = pvps->vps_extension.layer_id_in_nuh[j];
+            if (pvps->vps_extension.direct_dependency_flag[i][j])
+                IdDirectRefLayer[iNuhLId][d++] = jNuhLid;
+            if (DependencyFlag[i][j])
+                IdRefLayer[iNuhLId][r++] = jNuhLid;
+            if (DependencyFlag[j][i])
+                IdPredictedLayer[iNuhLId][p++] = jNuhLid;
+        } 
+        NumDirectRefLayers[iNuhLId] = d;
+        NumRefLayers[iNuhLId] = r;
+        NumPredictedLayers[iNuhLId] = p;
+    }
+}
+
+//(F-6) called
+void HevcParserImpl::updateNumIndependentLayers(std::shared_ptr<VPS> pvps)
+{
+    int i, j, k, h;
+    std::vector<uint8_t> layerIdInListFlag;
+    layerIdInListFlag.resize(64);
+    for (i = 0; i <= 63; i++)
+        layerIdInListFlag[i] = 0;
+    TreePartitionLayerIdList.resize(MaxLayersMinus1 +1);
+    NumLayersInTreePartition.resize(MaxLayersMinus1 + 1);
+    for (i = 0, k = 0; i <= MaxLayersMinus1; i++) {
+        int iNuhLId = pvps->vps_extension.layer_id_in_nuh[i];
+        TreePartitionLayerIdList[k].resize(NumPredictedLayers[iNuhLId]);
+        if (NumDirectRefLayers[iNuhLId] == 0) {
+            TreePartitionLayerIdList[k][0] = iNuhLId;
+            for (j = 0, h = 1; j < NumPredictedLayers[iNuhLId]; j++) {
+                int predLId = IdPredictedLayer[iNuhLId][j];
+                if (!layerIdInListFlag[predLId]) {
+                    TreePartitionLayerIdList[k][h++] = predLId;
+                    layerIdInListFlag[predLId] = 1;
+                }
+            }
+            NumLayersInTreePartition[k++] = h;
+        }
+    } 
+    NumIndependentLayers = k;
+}
+
+//(7-3) have callled
+void HevcParserImpl::updateMaxLayersMinus1(std::shared_ptr<VPS> pvps)
+{
+    MaxLayersMinus1 = std::min(62, (int)pvps->vps_max_layers_minus1);
+}
+
+//(F-10)
+void HevcParserImpl::updateMaxSubLayersInLayerSetMinus1(std::shared_ptr<VPS> pvps)
+{
+    //NumLayersInIdList.resize(NumLayerSets);
+    MaxSubLayersInLayerSetMinus1.resize(NumLayerSets);
+    for (int i = 0; i < NumLayerSets; i++) {
+        uint8_t maxSlMinus1 = 0;
+        for (int k = 0; k < NumLayersInIdList[i]; k++) {
+            int lId = LayerSetLayerIdList[i][k];
+            maxSlMinus1 = std::max(maxSlMinus1, pvps->vps_extension.sub_layers_vps_max_minus1[LayerIdxInVps[lId]]);
+        } 
+        MaxSubLayersInLayerSetMinus1[i] = maxSlMinus1;
+    }
+}
+
+VideoSignalInfo HevcParserImpl::processVideoSignalInfo(BitstreamReader& bs)
+{
+    VideoSignalInfo vsi;
+    vsi.toDefault();
+
+    vsi.video_vps_format = bs.showBits(3);
+    vsi.video_full_range_vps_flag = bs.showBits(1);
+    vsi.colour_primaries_vps = bs.showBits(8);
+    vsi.transfer_characteristics_vps = bs.showBits(8);
+    vsi.matrix_coeffs_vps = bs.showBits(8);
+
+    return vsi;
+}
+
+DpbSize HevcParserImpl::processDpbSize(std::shared_ptr<VPS> pvps, BitstreamReader& bs)
+{
+    DpbSize ds;
+    ds.toDefault();
+
+    int nos = NumOutputLayerSets;
+    ds.sub_layer_flag_info_present_flag.resize(nos);
+    ds.sub_layer_dpb_info_present_flag.resize(nos);
+    ds.max_vps_dec_pic_buffering_minus1.resize(nos);
+    ds.max_vps_num_reorder_pics.resize(nos);
+    ds.max_vps_latency_increase_plus1.resize(nos);
+    for (int i = 1;i < nos;i++) {
+        int currLsIdx = OlsIdxToLsIdx[i];
+        ds.sub_layer_flag_info_present_flag[i] = bs.getBit();
+
+        int mslism = MaxSubLayersInLayerSetMinus1[currLsIdx];
+
+        ds.sub_layer_dpb_info_present_flag[i].resize(mslism + 1);
+        ds.max_vps_dec_pic_buffering_minus1[i].resize(mslism + 1);
+        ds.max_vps_num_reorder_pics[i].resize(mslism + 1);
+        ds.max_vps_latency_increase_plus1[i].resize(mslism + 1);
+        for (int j = 0;j <= mslism; j++) {
+            if (j > 0 && ds.sub_layer_flag_info_present_flag[i]) {
+                ds.sub_layer_dpb_info_present_flag[i][j] = bs.getBit();
+            }
+            if (ds.sub_layer_dpb_info_present_flag[i][j]) {
+                for (int k = 0; k < NumLayersInIdList[currLsIdx]; k++) {
+                    if (NecessaryLayerFlag[i][k] && (pvps->vps_base_layer_internal_flag ||
+                        (LayerSetLayerIdList[currLsIdx][k] != 0))) {
+                        ds.max_vps_dec_pic_buffering_minus1[i][k][j] = bs.getGolombU();
+                    }
+                }
+                ds.max_vps_num_reorder_pics[i][j] = bs.getGolombU();
+                ds.max_vps_latency_increase_plus1[i][j] = bs.getGolombU();
+            }
+        }
+    }
+    return ds;
+}
 
 ScalingListData HevcParserImpl::processScalingListData(BitstreamReader &bs)
 {

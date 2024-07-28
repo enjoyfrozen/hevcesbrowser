@@ -3,6 +3,7 @@
 #include <climits>
 #include <stdexcept>
 #include <cassert>
+#include <iostream>
 //#include <boost/config/no_tr1/complex.hpp>
 
 #include "HevcUtils.h"
@@ -19,6 +20,18 @@ std::size_t BitstreamReader::available()
 {
   return (m_size - m_posBase -1) * CHAR_BIT + m_posInBase + 1;
 }
+
+bool BitstreamReader::byteAligned()
+{
+    return (available() % CHAR_BIT) == 0;
+}
+
+void BitstreamReader::skipBitsForByteAlign()
+{
+    int skip = (available() % CHAR_BIT);
+    skipBits(skip);
+}
+
 
 std::size_t BitstreamReader::availableInNalU()
 {
@@ -71,11 +84,11 @@ bool BitstreamReader::getBit()
 }
 
 
-uint32_t BitstreamReader::getBits(std::size_t num)
+uint64_t BitstreamReader::getBits(std::size_t num)
 {
-  assert(num <= 32);
+  assert(num <= 64);
 
-  uint32_t result = 0;
+  uint64_t result = 0;
   for(std::size_t i=0; i<num; i++)
     if(getBit())
       result |= 1 << (num - i - 1);

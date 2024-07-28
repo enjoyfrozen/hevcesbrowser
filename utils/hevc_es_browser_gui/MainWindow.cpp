@@ -17,6 +17,8 @@
 #include <QMenuBar>
 #include <QProgressBar>
 #include <QCoreApplication>
+#include <QTimer>
+#include <QtConcurrent>
 
 
 #include "CentralWidget.h"
@@ -25,7 +27,7 @@
 #include "HDRInfoViewer.h"
 #include "ProfileConformanceAnalyzer.h"
 
-#include "version_info.h"
+//#include "version_info.h"
 
 #include <HevcParser.h>
 
@@ -73,11 +75,16 @@ MainWindow::MainWindow(QWidget *parent, Qt::WindowFlags flags):
   setCentralWidget(pwgt);
 
   readCustomData();
+
+  qDebug() << __FUNCTION__ << "thread" << QThread::currentThread();
+
 }
 
 
 void MainWindow::process(const QString &fileName)
 {
+    qDebug() << __FUNCTION__ << "fileName"<< fileName<<"thread" << QThread::currentThread();
+
   QFile file(fileName);
 
 
@@ -100,7 +107,10 @@ void MainWindow::process(const QString &fileName)
 
   std::size_t position = 0;
 
-  QProgressBar *pprogressBar = new QProgressBar(NULL);
+  if (m_pprogressBar == nullptr)
+    m_pprogressBar = new QProgressBar();
+
+  QProgressBar *pprogressBar = m_pprogressBar;
   pprogressBar -> setWindowTitle("Opening...");
   pprogressBar -> setMinimum(0);
   pprogressBar -> setMaximum(100);
@@ -122,7 +132,8 @@ void MainWindow::process(const QString &fileName)
       break;
     }
 
-    file.seek(position);
+    qDebug() << __FUNCTION__ << "position"<< position<<"fileSize"<< fileSize;
+    file.seek(position); 
     pprogressBar -> setValue(position * 100 / fileSize);
     QCoreApplication::processEvents();
 
@@ -146,7 +157,7 @@ void MainWindow::process(const QString &fileName)
   pcntwgt -> m_phexViewer -> setData((QHexView::DataStorage *)new QHexView::DataStorageFile(fileName));
 
   pprogressBar -> close();
-  delete pprogressBar;
+  //delete pprogressBar;
 
   HEVC::Parser::release(pparser);
 }
@@ -239,10 +250,9 @@ void MainWindow::readCustomData()
 void MainWindow::slotAbout()
 {
   QString message;
-  message = "<center><b>HEVCESBrowser</b></center>";
-  message += "<center>virinext@gmail.com</center>";
+  message = "<center><b>HEVC ES Browser</b></center>";
+  message += "<center>12685137@qq.com</center>";
   message += QString("<center>Version: ") + VERSION_STR + "</center>";
-  message += "<center>GUI Based on Qt</center>";
   QMessageBox::about(this, "About", message);
 }
 

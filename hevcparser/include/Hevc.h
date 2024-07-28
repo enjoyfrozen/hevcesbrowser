@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <cstddef>
+#include <string>
 
 namespace HEVC
 {
@@ -61,6 +62,18 @@ namespace HEVC
     uint8_t                general_interlaced_source_flag;
     uint8_t                general_non_packed_constraint_flag;
     uint8_t                general_frame_only_constraint_flag;
+
+    uint8_t general_max_12bit_constraint_flag;
+    uint8_t general_max_10bit_constraint_flag;
+    uint8_t general_max_8bit_constraint_flag;
+    uint8_t general_max_422chroma_constraint_flag;
+    uint8_t general_max_420chroma_constraint_flag;
+    uint8_t general_max_monochrome_constraint_flag;
+    uint8_t general_intra_constraint_flag;
+    uint8_t general_one_picture_only_constraint_flag;
+    uint8_t general_lower_bit_rate_constraint_flag;
+    uint8_t general_inbld_flag;
+
     uint8_t                general_level_idc;
     std::vector<uint8_t>   sub_layer_profile_present_flag;
     std::vector<uint8_t>   sub_layer_level_present_flag;
@@ -74,6 +87,18 @@ namespace HEVC
     std::vector<uint8_t>   sub_layer_non_packed_constraint_flag;
     std::vector<uint8_t>   sub_layer_frame_only_constraint_flag;
     std::vector<uint8_t>   sub_layer_level_idc;
+
+
+    std::vector<uint8_t>  sub_layer_max_12bit_constraint_flag;
+    std::vector<uint8_t>  sub_layer_max_10bit_constraint_flag;
+    std::vector<uint8_t>  sub_layer_max_8bit_constraint_flag;
+    std::vector<uint8_t>  sub_layer_max_422chroma_constraint_flag;
+    std::vector<uint8_t>  sub_layer_max_420chroma_constraint_flag;
+    std::vector<uint8_t>  sub_layer_max_monochrome_constraint_flag;
+    std::vector<uint8_t>  sub_layer_intra_constraint_flag;
+    std::vector<uint8_t>  sub_layer_one_picture_only_constraint_flag;
+    std::vector<uint8_t>  sub_layer_lower_bit_rate_constraint_flag;
+    std::vector<uint8_t>  sub_layer_inbld_flag;
 
     void toDefault();
 
@@ -139,6 +164,346 @@ namespace HEVC
 
     bool operator == (const HrdParameters &) const;
  };
+
+  class VideoSignalInfo
+  {
+  public:
+      uint8_t video_vps_format;
+      uint8_t video_full_range_vps_flag;
+      uint8_t colour_primaries_vps;
+      uint8_t transfer_characteristics_vps;
+      uint8_t matrix_coeffs_vps;
+      
+      void toDefault();
+
+      bool operator == (const VideoSignalInfo&) const;
+  };
+
+
+  //vps_vui_bsp_hrd_params
+  class VpsVuiBspHrdParams {
+  public:
+      uint32_t vps_num_add_hrd_params;
+      std::vector<uint8_t> cprms_add_present_flag;
+      std::vector<uint32_t> num_sub_layer_hrd_minus1;
+      std::vector < HrdParameters> hrd_parameters;
+      std::vector<uint32_t> num_signalled_partitioning_schemes;
+      std::vector < std::vector<uint32_t>> num_partitions_in_scheme_minus1;
+      std::vector < std::vector < std::vector < std::vector < uint8_t> > >> layer_included_in_partition_flag;
+      std::vector < std::vector < std::vector < uint32_t> > > num_bsp_schedules_minus1;
+      std::vector < std::vector < std::vector < std::vector < std::vector < uint32_t> > >>> bsp_hrd_idx;
+      std::vector < std::vector < std::vector < std::vector < std::vector < uint32_t> > >>> bsp_sched_idx;
+
+      void toDefault();
+
+  };
+
+
+  //zorro add VpsVui
+  class VpsVui
+  {
+  public:
+      uint8_t cross_layer_pic_type_aligned_flag;
+      uint8_t cross_layer_irap_aligned_flag;
+      uint8_t all_layers_idr_aligned_flag;
+      uint8_t bit_rate_present_vps_flag;
+      uint8_t pic_rate_present_vps_flag;
+      std::vector< std::vector< uint8_t> > bit_rate_present_flag;
+      std::vector< std::vector< uint8_t> >  pic_rate_present_flag;
+      std::vector< std::vector< uint16_t> > avg_bit_rate;
+      std::vector< std::vector< uint16_t> > max_bit_rate;
+      std::vector< std::vector< uint8_t> > constant_pic_rate_idc;
+      std::vector< std::vector< uint16_t> > avg_pic_rate;
+
+      uint8_t video_signal_info_idx_present_flag;
+      uint8_t vps_num_video_signal_info_minus1;
+
+      std::vector < VideoSignalInfo> video_signal_info;
+      std::vector< uint8_t> vps_video_signal_info_idx;
+      uint8_t tiles_not_in_use_flag;
+      std::vector< uint8_t> tiles_in_use_flag;
+      std::vector< uint8_t> loop_filter_not_across_tiles_flag;
+      std::vector < std::vector< uint8_t>> tile_boundaries_aligned_flag;
+
+      uint8_t wpp_not_in_use_flag;
+      std::vector< uint8_t>  wpp_in_use_flag;
+      uint8_t single_layer_for_non_irap_flag;
+      uint8_t higher_layer_irap_skip_flag;
+      uint8_t ilp_restricted_ref_layers_flag;
+      std::vector < std::vector< uint8_t>> min_spatial_segment_offset_plus1;
+      std::vector < std::vector< uint8_t>> ctu_based_offset_enabled_flag;
+      std::vector < std::vector< uint8_t>> min_horizontal_ctu_offset_plus1;
+      uint8_t vps_vui_bsp_hrd_present_flag;
+
+      VpsVuiBspHrdParams vps_vui_bsp_hrd_params;
+      std::vector< uint8_t> base_layer_parameter_set_compatibility_flag;
+
+      void toDefault();
+
+  };
+
+  //dpb_size
+  class DpbSize
+  {
+  public:
+      std::vector< uint8_t> sub_layer_flag_info_present_flag;
+      std::vector < std::vector< uint8_t>> sub_layer_dpb_info_present_flag;
+      std::vector<std::vector< std::vector< uint8_t> > > max_vps_dec_pic_buffering_minus1;
+      std::vector< std::vector< uint8_t> > max_vps_num_reorder_pics;
+      std::vector< std::vector< uint8_t> > max_vps_latency_increase_plus1;
+
+      void toDefault();
+
+      bool operator == (const DpbSize&) const;
+  };
+
+  //rep_format
+  class RepFormat
+  {
+  public:
+      uint16_t pic_width_vps_in_luma_samples;
+      uint16_t pic_height_vps_in_luma_samples;
+      uint8_t chroma_and_bit_depth_vps_present_flag;
+      uint8_t chroma_format_vps_idc;
+      uint8_t separate_colour_plane_vps_flag;
+      uint8_t bit_depth_vps_luma_minus8;
+      uint8_t bit_depth_vps_chroma_minus8;
+      uint8_t conformance_window_vps_flag;
+      uint32_t conf_win_vps_left_offset;
+      uint32_t conf_win_vps_right_offset;
+      uint32_t conf_win_vps_top_offset;
+      uint32_t conf_win_vps_bottom_offset;
+
+
+      void toDefault();
+
+      bool operator == (const RepFormat&) const;
+  };
+
+  //zorro add  vps_extension
+  class VpsExtension
+  {
+  public:
+    //profile_tier_level( 0, vps_max_sub_layers_minus1 )
+
+    uint8_t splitting_flag;
+    std::vector<uint8_t> scalability_mask_flag;
+
+    std::vector<uint8_t>  dimension_id_len_minus1;
+    uint8_t vps_nuh_layer_id_present_flag;
+    std::vector<uint8_t> layer_id_in_nuh;
+    std::vector< std::vector< uint8_t> > dimension_id;
+    uint8_t view_id_len;
+    std::vector<uint8_t>  view_id_val;
+    std::vector< std::vector< uint8_t> > direct_dependency_flag;
+    uint32_t num_add_layer_sets;
+    std::vector< std::vector< uint8_t> > highest_layer_idx_plus1;
+    uint8_t vps_sub_layers_max_minus1_present_flag;
+    std::vector< uint8_t> sub_layers_vps_max_minus1;
+    uint8_t max_tid_ref_present_flag;
+    std::vector< std::vector< uint8_t> > max_tid_il_ref_pics_plus1;
+    uint8_t default_ref_layers_active_flag;
+    uint8_t vps_num_profile_tier_level_minus1;
+    std::vector<uint8_t>  vps_profile_present_flag;
+    //profile_tier_level( vps_profile_present_flag[ i ], vps_max_sub_layers_minus1 )
+    uint8_t num_add_olss;
+    uint8_t default_output_layer_idc;
+    //uint32_t NumOutputLayerSets() {  return num_add_olss + NumLayerSets();  }
+    std::vector<uint8_t> layer_set_idx_for_ols_minus1;
+    std::vector< std::vector< uint8_t> > output_layer_flag;
+    std::vector< std::vector< uint8_t> > profile_tier_level_idx;
+    std::vector< uint8_t> alt_output_layer_flag;
+    uint8_t vps_num_rep_formats_minus1;
+    std::vector < RepFormat> rep_format;
+    uint8_t rep_format_idx_present_flag;
+    std::vector<uint8_t> vps_rep_format_idx;
+    uint8_t max_one_active_ref_layer_flag;
+    uint8_t vps_poc_lsb_aligned_flag;
+    std::vector<uint8_t> poc_lsb_not_present_flag;
+    DpbSize dpb_size;
+    uint8_t direct_dep_type_len_minus2;
+    uint8_t direct_dependency_all_layers_flag;
+    uint32_t direct_dependency_all_layers_type;
+    std::vector< std::vector< uint8_t> >  direct_dependency_type;
+    uint32_t vps_non_vui_extension_length;
+    std::vector<uint8_t> vps_non_vui_extension_data_byte;
+    uint8_t vps_vui_present_flag;
+    //alignbyte
+    VpsVui vps_vui;
+
+    void toDefault();
+
+    bool operator == (const VpsExtension&) const;
+  };
+  
+  //zorro add  vps_3d_extension
+  class Vps3dExtension
+  {
+  public:
+      uint32_t cp_precision;
+      std::vector<uint8_t> num_cp;
+      std::vector<uint8_t> cp_in_slice_segment_header_flag;
+      std::vector<std::vector< std::vector< uint32_t> > > cp_ref_voi;
+      std::vector<std::vector< std::vector< uint32_t> > > vps_cp_scale;
+      std::vector<std::vector< std::vector< uint32_t> > > vps_cp_off;
+      std::vector<std::vector< std::vector< uint32_t> > > vps_cp_inv_scale_plus_scale;
+      std::vector<std::vector< std::vector< uint32_t> > > vps_cp_inv_off_plus_off;
+
+      void toDefault();
+
+      bool operator == (const Vps3dExtension&) const;
+  };
+
+  //zorro add  sps_3d_extension
+  class Sps3dExtension
+  {
+  public:
+      uint8_t iv_di_mc_enabled_flag[2];
+      uint8_t iv_mv_scal_enabled_flag[2];
+      uint32_t log2_ivmc_sub_pb_size_minus3 [2];
+      uint8_t iv_res_pred_enabled_flag[2];
+      uint8_t depth_ref_enabled_flag[2];
+      uint8_t vsp_mc_enabled_flag[2];
+      uint8_t dbbp_enabled_flag[2];
+      uint8_t tex_mc_enabled_flag[2];
+      uint8_t log2_texmc_sub_pb_size_minus3[2];
+      uint8_t intra_contour_enabled_flag [2];
+      uint8_t intra_dc_only_wedge_enabled_flag[2];
+      uint8_t cqt_cu_part_pred_enabled_flag[2];
+      uint8_t inter_dc_only_enabled_flag[2];
+      uint8_t skip_intra_enabled_flag [2];
+      
+      void toDefault();
+
+      bool operator == (const Sps3dExtension&) const;
+  };
+
+  //sps_range_extension
+  class SpsRangeExtension
+  {
+  public:
+      uint8_t transform_skip_rotation_enabled_flag;
+      uint8_t transform_skip_context_enabled_flag;
+      uint8_t implicit_rdpcm_enabled_flag;
+      uint8_t explicit_rdpcm_enabled_flag;
+      
+      uint8_t extended_precision_processing_flag;
+
+      uint8_t intra_smoothing_disabled_flag;
+      uint8_t high_precision_offsets_enabled_flag;
+      uint8_t persistent_rice_adaptation_enabled_flag;
+      uint8_t cabac_bypass_alignment_enabled_flag;
+
+      void toDefault();
+  };
+
+  //pps_range_extension
+  class PpsRangeExtension {
+  public:
+      uint32_t log2_max_transform_skip_block_size_minus2;
+      uint8_t cross_component_prediction_enabled_flag;
+      uint8_t chroma_qp_offset_list_enabled_flag;
+      uint32_t diff_cu_chroma_qp_offset_depth;
+      uint32_t chroma_qp_offset_list_len_minus1;
+      std::vector<int32_t> cb_qp_offset_list;
+      std::vector<int32_t> cr_qp_offset_list;
+      
+      uint32_t log2_sao_offset_scale_luma;
+      uint32_t log2_sao_offset_scale_chroma;
+
+      void toDefault();
+  };
+
+  //colour_mapping_table
+  class ColourMappingTable
+  {
+  public:
+      uint8_t num_cm_ref_layers_minus1;
+      std::vector<uint8_t> cm_ref_layer_id;
+      uint8_t cm_octant_depth;
+      uint8_t cm_y_part_num_log2;
+      uint8_t luma_bit_depth_cm_input_minus8;
+      uint8_t chroma_bit_depth_cm_input_minus8;
+      uint8_t luma_bit_depth_cm_output_minus8;
+      uint8_t chroma_bit_depth_cm_output_minus8;
+      uint8_t cm_res_quant_bits;
+      uint8_t cm_delta_flc_bits_minus1;
+      uint8_t cm_adapt_threshold_u_delta;
+      uint8_t cm_adapt_threshold_v_delta;
+      //colour_mapping_octants
+
+      void toDefault();
+  };
+
+  //pps_multilayer_extension
+  class PpsMultilayerExtension
+  {
+  public:
+      uint8_t poc_reset_info_present_flag;
+      uint8_t pps_infer_scaling_list_flag;
+      uint8_t pps_scaling_list_ref_layer_id;
+      uint16_t num_ref_loc_offsets;
+      //for (i = 0; i < num_ref_loc_offsets; i++) 
+      //{
+          std::vector<uint8_t> ref_loc_offset_layer_id;
+          std::vector<uint8_t> scaled_ref_layer_offset_present_flag;
+          std::vector<uint8_t> scaled_ref_layer_left_offset;
+          std::vector<uint8_t> scaled_ref_layer_top_offset;
+          std::vector<uint8_t> scaled_ref_layer_right_offset;
+          std::vector<uint8_t> scaled_ref_layer_bottom_offset;
+
+      //}
+      std::vector<uint8_t> ref_region_offset_present_flag;
+      std::vector<uint8_t> ref_region_left_offset;
+      std::vector<uint8_t> ref_region_top_offset;
+      std::vector<uint8_t> ref_region_right_offset;
+      std::vector<uint8_t> ref_region_bottom_offset;
+      std::vector<uint8_t> resample_phase_set_present_flag;
+      std::vector<uint8_t> phase_hor_luma;
+      std::vector<uint8_t> phase_ver_luma;
+      std::vector<uint8_t> phase_hor_chroma_plus8;
+      std::vector<uint8_t> phase_ver_chroma_plus8;
+      uint8_t colour_mapping_enabled_flag;
+      ColourMappingTable colour_mapping_table;
+
+      void toDefault();
+
+  };
+
+
+  //delta_dlt
+  class DeltaDlt
+  {
+  public:
+      uint32_t num_val_delta_dlt;
+      uint32_t max_diff;
+      uint32_t min_diff_minus1;
+      uint32_t delta_dlt_val0;
+      std::vector< uint8_t> delta_val_diff_minus_min;
+
+      void toDefault();
+
+      bool operator == (const DeltaDlt&) const;
+  };
+
+  //pps_3d_extension(
+  class Pps3dExtension 
+  {
+  public:
+      uint8_t dlts_present_flag;
+      uint8_t pps_depth_layers_minus1;
+      uint8_t pps_bit_depth_for_depth_layers_minus8;
+      std::vector<uint8_t> dlt_flag;
+      std::vector<uint8_t> dlt_pred_flag;
+      std::vector<uint8_t> dlt_val_flags_present_flag;
+      std::vector< std::vector< uint8_t> >  dlt_value_flag;
+
+      std::vector < DeltaDlt> delta_dlt;
+
+      void toDefault();
+
+      bool operator == (const Pps3dExtension&) const;
+  };
 
   class ShortTermRefPicSet
   {
@@ -681,6 +1046,9 @@ namespace HEVC
     public:
       VPS();
       uint8_t                   vps_video_parameter_set_id;
+      uint8_t                   vps_base_layer_internal_flag;
+      uint8_t                   vps_base_layer_available_flag;
+
       uint8_t                   vps_max_layers_minus1;
       uint8_t                   vps_max_sub_layers_minus1;
       uint8_t                   vps_temporal_id_nesting_flag;
@@ -704,6 +1072,14 @@ namespace HEVC
       std::vector<HrdParameters>
                                 hrd_parameters;
       uint8_t                   vps_extension_flag;
+
+      VpsExtension vps_extension;
+
+      uint8_t vps_extension2_flag;
+      uint8_t vps_3d_extension_flag;
+      Vps3dExtension vps_3d_extension;
+      
+      uint8_t vps_extension3_flag;
 
       void toDefault();
       bool operator == (const VPS &) const;
@@ -765,6 +1141,15 @@ namespace HEVC
       VuiParameters            vui_parameters;
       uint8_t                  sps_extension_flag;
 
+      uint8_t                  sps_range_extension_flag;
+      uint8_t                  sps_multilayer_extension_flag;
+      uint8_t                  sps_3d_extension_flag;
+      uint8_t                  sps_extension_5bits;
+
+      SpsRangeExtension sps_range_extension;
+      uint8_t                  inter_view_mv_vert_constraint_flag;
+      Sps3dExtension sps_3d_extension;
+
       void toDefault();
 
       bool operator == (const SPS &) const;
@@ -819,6 +1204,17 @@ namespace HEVC
     int32_t      log2_parallel_merge_level_minus2;
     uint8_t      slice_segment_header_extension_present_flag;
     uint8_t      pps_extension_flag;
+
+    uint8_t pps_range_extension_flag;
+    uint8_t pps_multilayer_extension_flag;
+    uint8_t pps_3d_extension_flag;
+    uint8_t pps_extension_5bits;
+
+    PpsRangeExtension pps_range_extension;
+
+    PpsMultilayerExtension pps_multilayer_extension;
+
+    Pps3dExtension pps_3d_extension;
 
     void toDefault();
 
