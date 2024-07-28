@@ -30,9 +30,26 @@ void StreamInfoViewer::onNALUnit(std::shared_ptr<HEVC::NALUnit> pNALUnit, const 
       m_profile = pVPS -> profile_tier_level.general_profile_idc;
       m_tier = pVPS -> profile_tier_level.general_tier_flag;
       m_level = pVPS -> profile_tier_level.general_level_idc;
+      m_frame_rate = pVPS->vps_time_scale;
       break;
     }
+    case HEVC::NAL_SPS:
+    {
+      std::shared_ptr<HEVC::SPS> pSPS = std::dynamic_pointer_cast<HEVC::SPS>(pNALUnit);
 
+      m_frame_width = pSPS->pic_width_in_luma_samples;
+      m_frame_height = pSPS->pic_height_in_luma_samples;
+
+      if (pSPS->vui_parameters_present_flag && pSPS->vui_parameters.vui_timing_info_present_flag) {
+          if ( pSPS->vui_parameters.vui_num_units_in_tick !=0)
+            m_frame_rate = pSPS->vui_parameters.vui_time_scale/ pSPS->vui_parameters.vui_num_units_in_tick;
+          else {
+            qWarning()<<__FUNCTION__<<"vui_parameters.vui_time_scale"<<pSPS->vui_parameters.vui_time_scale
+                       <<"vui_parameters.vui_num_units_in_tick"<<pSPS->vui_parameters.vui_num_units_in_tick;
+          }
+      }
+      break;
+    }
     case HEVC::NAL_IDR_W_RADL:
     case HEVC::NAL_IDR_N_LP:
     case HEVC::NAL_TRAIL_R:
@@ -51,7 +68,9 @@ void StreamInfoViewer::onNALUnit(std::shared_ptr<HEVC::NALUnit> pNALUnit, const 
     case HEVC::NAL_CRA_NUT:
     {
       std::shared_ptr<HEVC::Slice> pSlice = std::dynamic_pointer_cast<HEVC::Slice>(pNALUnit);
-
+      if (pSlice->first_slice_segment_in_pic_flag) {
+          m_frameNumber++;
+      }
       if(pSlice -> dependent_slice_segment_flag)
       {
         switch(m_prevSliceType)
@@ -110,6 +129,10 @@ void StreamInfoViewer::clear()
   m_INumber = 0;
   m_PNumber = 0;
   m_BNumber = 0;
+  m_frameNumber = 0;
+  m_frame_rate = 0;
+  m_frame_width = 0;
+  m_frame_height = 0;
   m_prevSliceType = HEVC::Slice::NONE_SLICE;
   m_profile = std::numeric_limits<std::size_t>::max();
   m_tier = std::numeric_limits<std::size_t>::max();
@@ -142,6 +165,9 @@ void StreamInfoViewer::update()
   addItem(QString("I: ") + QString::number(m_INumber) + " (" + QString::number((double)m_INumber * 100 / slicesNumber) + " %)");
   addItem(QString("P: ") + QString::number(m_PNumber) + " (" + QString::number((double)m_PNumber * 100 / slicesNumber) + " %)");
   addItem(QString("B: ") + QString::number(m_BNumber) + " (" + QString::number((double)m_BNumber * 100 / slicesNumber) + " %)");
+  addItem(QString("Frames: ") + QString::number(m_frameNumber));
+  addItem(QString("FrameRate: ") + QString::number(m_frame_rate));
+  addItem(QString("Resolution: %1x%2").arg(m_frame_width).arg(m_frame_height));
 
   QString profile;
   QString level;

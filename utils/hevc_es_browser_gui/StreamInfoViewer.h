@@ -33,9 +33,15 @@ class StreamInfoViewer:
     std::size_t      m_INumber;
     std::size_t      m_PNumber;
     std::size_t      m_BNumber;
+    std::size_t      m_frameNumber;
+
     std::size_t      m_profile;
     std::size_t      m_level;
     std::size_t      m_tier;
+    int              m_frame_width;
+    int              m_frame_height;
+
+    double           m_frame_rate;
 
     HEVC::Slice::SliceType    m_prevSliceType;
 };
