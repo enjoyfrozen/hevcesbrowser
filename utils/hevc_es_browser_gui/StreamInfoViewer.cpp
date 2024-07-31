@@ -42,7 +42,7 @@ void StreamInfoViewer::onNALUnit(std::shared_ptr<HEVC::NALUnit> pNALUnit, const 
 
       if (pSPS->vui_parameters_present_flag && pSPS->vui_parameters.vui_timing_info_present_flag) {
           if ( pSPS->vui_parameters.vui_num_units_in_tick !=0)
-            m_frame_rate = pSPS->vui_parameters.vui_time_scale/ pSPS->vui_parameters.vui_num_units_in_tick;
+              m_frame_rate = pSPS->vui_parameters.vui_time_scale/(double) pSPS->vui_parameters.vui_num_units_in_tick;
           else {
             qWarning()<<__FUNCTION__<<"vui_parameters.vui_time_scale"<<pSPS->vui_parameters.vui_time_scale
                        <<"vui_parameters.vui_num_units_in_tick"<<pSPS->vui_parameters.vui_num_units_in_tick;
